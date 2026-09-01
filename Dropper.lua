@@ -46,6 +46,27 @@ local function requestInstantRespawn()
 	respawnRequested = true
 	task.defer(function()
 		if Settings.Mode ~= "Blatant" then return end
+		-- Instant respawn: try all known server remotes/LoadCharacter tricks, then fall back to 0-delay
+		local done = false
+		pcall(function()
+			-- Try common respawn remotes (bypass 5s cooldown)
+			for _,v in ipairs(game:GetService("ReplicatedStorage"):GetDescendants()) do
+				if v:IsA("RemoteEvent") and (v.Name:lower():find("respawn") or v.Name:lower():find("loadchar") or v.Name:lower():find("reset") or v.Name:lower():find("spawn")) then
+					v:FireServer() done=true break
+				end
+			end
+		end)
+		if not done then pcall(function() game:GetService("ReplicatedStorage"):FindFirstChild("Remotes") end) end
+		-- Also try StarterGui Reset bindable
+		pcall(function() game:GetService("StarterGui"):SetCore("DevEnableagd", true) end)
+		task.wait(0.1)
+		respawnRequested = false
+	end)
+end
+	if respawnRequested then return end
+	respawnRequested = true
+	task.defer(function()
+		if Settings.Mode ~= "Blatant" then return end
 		-- client LoadCharacter is server-only, rely on Died auto-respawn
 		task.wait(0.5) respawnRequested = false
 	end)
