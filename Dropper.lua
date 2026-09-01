@@ -40,36 +40,63 @@ function AutoDead.killCharacter(character: Model): boolean
 end
 
 local respawnRequested = false
-local function requestInstantRespawn()
-	if Settings.Mode ~= "Blatant" then return end
-	if respawnRequested then return end
-	respawnRequested = true
-	task.defer(function()
-		if Settings.Mode ~= "Blatant" then return end
-		-- Instant respawn: try all known server remotes/LoadCharacter tricks, then fall back to 0-delay
-		local done = false
-		pcall(function()
-			-- Try common respawn remotes (bypass 5s cooldown)
-			for _,v in ipairs(game:GetService("ReplicatedStorage"):GetDescendants()) do
-				if v:IsA("RemoteEvent") and (v.Name:lower():find("respawn") or v.Name:lower():find("loadchar") or v.Name:lower():find("reset") or v.Name:lower():find("spawn")) then
-					v:FireServer() done=true break
+local respawnDebounce = 0
+local function fireRespawnRemotes()
+	-- Bypass game anticheat / 5s cooldown: spam every possible respawn path client can trigger
+	pcall(function()
+		for _,v in ipairs(game:GetService("ReplicatedStorage"):GetDescendants()) do
+			if v:IsA("RemoteEvent") or v:IsA("RemoteFunction") then
+				local n = v.Name:lower()
+				if n:find("respawn") or n:find("loadchar") or n:find("spawn") or n:find("reset") or n:find("revive") or n:find("respaw") then
+					pcall(function() if v:IsA("RemoteEvent") then v:FireServer() else v:InvokeServer() end end)
 				end
 			end
-		end)
-		if not done then pcall(function() game:GetService("ReplicatedStorage"):FindFirstChild("Remotes") end) end
-		-- Also try StarterGui Reset bindable
-		pcall(function() game:GetService("StarterGui"):SetCore("DevEnableagd", true) end)
-		task.wait(0.1)
+		end
+	end)
+	pcall(function()
+		for _,v in ipairs(game:GetService("ReplicatedStorage"):GetDescendants()) do
+			if v:IsA("RemoteEvent") and v.Parent and v.Parent.Name:lower():find("remote") then
+				-- second pass: try generic remotes that accept "Respawn" arg (common bypass)
+				pcall(function() v:FireServer("Respawn") end)
+				pcall(function() v:FireServer("LoadCharacter") end)
+				pcall(function() v:FireServer("Reset") end)
+			end
+		end
+	end)
+	-- Roblox core reset signal (some games listen to this)
+	pcall(function() game:GetService("StarterGui"):SetCore("DevEnableagd", true) end)
+end
+local function requestInstantRespawn()
+	if Settings.Mode ~= "Blatant" then return end
+	if os.clock() - respawnDebounce < 0.05 then return end
+	respawnDebounce = os.clock()
+	if respawnRequested then return end
+	respawnRequested = true
+	task.spawn(function()
+		local start = os.clock()
+		local oldChar = player.Character
+		-- Spam until new alive character appears or 6s timeout (no cooldown wait)
+		while Settings.Mode == "Blatant" and os.clock() - start < 6 do
+			local cur = player.Character
+			local hum = cur and cur:FindFirstChildOfClass("Humanoid")
+			if cur and cur ~= oldChar and hum and hum.Health > 0 and cur:FindFirstChild("HumanoidRootPart") then break end
+			-- if no character at all, spam harder
+			fireRespawnRemotes()
+			task.wait(0.08)
+		end
 		respawnRequested = false
 	end)
 end
 player.CharacterAdded:Connect(function(character)
 	respawnRequested = false
+	-- instant hook no delay
 	local humanoid = character:FindFirstChildOfClass("Humanoid") or character:WaitForChild("Humanoid", 5)
 	if humanoid then humanoid.Died:Connect(function() if Settings.Mode == "Blatant" then requestInstantRespawn() end end) end
 end)
-player.CharacterRemoving:Connect(function(character) if Settings.Mode ~= "Blatant" then return end if player.Character == character or player.Character == nil then requestInstantRespawn() end end)
+player.CharacterRemoving:Connect(function(character) if Settings.Mode ~= "Blatant" then return end requestInstantRespawn() end)
 if player.Character then local hum = player.Character:FindFirstChildOfClass("Humanoid") if hum then hum.Died:Connect(function() if Settings.Mode == "Blatant" then requestInstantRespawn() end end) end end
+-- Also catch Health->0 instantly without waiting for Died signal (anticheat bypass)
+player:GetPropertyChangedSignal("Character"):Connect(function() if Settings.Mode == "Blatant" and player.Character == nil then requestInstantRespawn() end end)
 local function getClient(): Player? return Players:GetPlayerByUserId(Settings.ClientUserId) end
 local function getRoot(character: Model): BasePart?
 	local root = character:FindFirstChild("HumanoidRootPart")
@@ -90,8 +117,8 @@ local function waitForNewCharacter(oldCharacter: Model): Model?
 	local startTime = os.clock()
 	while os.clock() - startTime < Settings.RespawnTimeout do
 		local character = player.Character
-		if character and character ~= oldCharacter and getRoot(character) then local humanoid = getHumanoid(character) if humanoid and humanoid.Health > 0 then if Settings.CharacterReadyDelay > 0 then task.wait(Settings.CharacterReadyDelay) end return character end end
-		task.wait(Settings.CheckInterval)
+		if character and character ~= oldCharacter and getRoot(character) then local humanoid = getHumanoid(character) if humanoid and humanoid.Health > 0 then if Settings.Mode ~= "Blatant" and Settings.CharacterReadyDelay > 0 then task.wait(Settings.CharacterReadyDelay) end return character end end
+		task.wait(Settings.Mode == "Blatant" and 0.03 or Settings.CheckInterval)
 	end
 	warn(string.format("[%s] Instant respawn timeout.", player.Name)) return nil
 end
