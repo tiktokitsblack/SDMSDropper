@@ -62,15 +62,15 @@ local function requestInstantRespawn()
 		task.wait(0.1)
 		respawnRequested = false
 	end)
-
-	if respawnRequested then return end
-	respawnRequested = true
-	task.defer(function()
-		if Settings.Mode ~= "Blatant" then return end
-		-- client LoadCharacter is server-only, rely on Died auto-respawn
-		task.wait(0.5) respawnRequested = false
-	end)
 end
+if respawnRequested then return end
+respawnRequested = true
+task.defer(function()
+	if Settings.Mode ~= "Blatant" then return end
+	-- client LoadCharacter is server-only, rely on Died auto-respawn
+	task.wait(0.5) respawnRequested = false
+end)
+
 player.CharacterAdded:Connect(function(character)
 	respawnRequested = false
 	local humanoid = character:FindFirstChildOfClass("Humanoid") or character:WaitForChild("Humanoid", 5)
