@@ -62,7 +62,7 @@ local function requestInstantRespawn()
 		task.wait(0.1)
 		respawnRequested = false
 	end)
-end
+
 	if respawnRequested then return end
 	respawnRequested = true
 	task.defer(function()
