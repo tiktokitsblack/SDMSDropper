@@ -1,6 +1,6 @@
 --!strict
 -- Dropper - reads Settings from loader getgenv (no hardcoded Settings here)
-local Settings = rawget(getgenv(), "Settings") or error("Settings not found - loader must set getgenv().Settings before HttpGet")
+local Settings = (getgenv and rawget(getgenv(), "Settings") or rawget(_G, "Settings")) or error("Settings not found - loader must set Settings before HttpGet")
 local Players = game:GetService("Players")
 local player = Players.LocalPlayer
 local VirtualUser = game:GetService("VirtualUser")
@@ -63,14 +63,6 @@ local function requestInstantRespawn()
 		respawnRequested = false
 	end)
 end
-if respawnRequested then return end
-respawnRequested = true
-task.defer(function()
-	if Settings.Mode ~= "Blatant" then return end
-	-- client LoadCharacter is server-only, rely on Died auto-respawn
-	task.wait(0.5) respawnRequested = false
-end)
-
 player.CharacterAdded:Connect(function(character)
 	respawnRequested = false
 	local humanoid = character:FindFirstChildOfClass("Humanoid") or character:WaitForChild("Humanoid", 5)
