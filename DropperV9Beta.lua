@@ -258,6 +258,9 @@ local Status = {
 -- ============================================================
 local localSetters: {[string]: (string) -> ()}? = nil
 local localAltDot: Frame? = nil
+local localProgressFill: Frame? = nil
+local localProgressLabel: TextLabel? = nil
+local localHeaderSub: TextLabel? = nil
 local function createLocalUI()
 	local playerGui = player:WaitForChild("PlayerGui", 30)
 	if not playerGui then warn("[Dropper] PlayerGui not found for alt UI.") return end
@@ -272,64 +275,169 @@ local function createLocalUI()
 
 	local frame = Instance.new("Frame")
 	frame.Name = "Panel"
-	frame.Size = UDim2.new(0, 300, 0, 250)
+	frame.Size = UDim2.new(0, 332, 0, 368)
 	frame.AnchorPoint = Vector2.new(0.5, 0.5)
 	frame.Position = UDim2.new(0.5, 0, 0.5, 0)
-	frame.BackgroundColor3 = Color3.fromRGB(13, 16, 24)
+	frame.BackgroundColor3 = Color3.fromRGB(13, 16, 26)
 	frame.BorderSizePixel = 0
 	frame.Active = true
 	frame.ClipsDescendants = true
 	frame.Parent = ScreenGui
 
 	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, 10)
+	corner.CornerRadius = UDim.new(0, 12)
 	corner.Parent = frame
 
 	local stroke = Instance.new("UIStroke")
-	stroke.Color = Color3.fromRGB(34, 130, 190)
-	stroke.Thickness = 1.5
-	stroke.Transparency = 0.25
+	stroke.Color = Color3.fromRGB(56, 78, 120)
+	stroke.Thickness = 1
+	stroke.Transparency = 0.35
 	stroke.Parent = frame
 
-	local title = Instance.new("TextLabel")
-	title.Size = UDim2.new(1, 0, 0, 32)
-	title.Position = UDim2.new(0, 0, 0, 0)
-	title.BackgroundColor3 = Color3.fromRGB(38, 150, 220)
-	title.BorderSizePixel = 0
-	title.Text = "  DROPPER — " .. player.Name .. "  (#" .. tostring(myAccountIndex or "?") .. ")"
-	title.TextColor3 = Color3.fromRGB(255, 255, 255)
-	title.TextXAlignment = Enum.TextXAlignment.Left
-	title.TextTruncate = Enum.TextTruncate.AtEnd
-	title.Font = Enum.Font.GothamBold
-	title.TextSize = 13
-	title.Parent = frame
-	local titleGrad = Instance.new("UIGradient")
-	titleGrad.Color = ColorSequence.new({
-		ColorSequenceKeypoint.new(0, Color3.fromRGB(53, 186, 243)),
-		ColorSequenceKeypoint.new(1, Color3.fromRGB(28, 138, 205)),
+	-- Header: avatar + identity + live status dot.
+	local header = Instance.new("Frame")
+	header.Name = "Header"
+	header.Size = UDim2.new(1, 0, 0, 74)
+	header.BackgroundColor3 = Color3.fromRGB(19, 24, 38)
+	header.BorderSizePixel = 0
+	header.Parent = frame
+	local headerGrad = Instance.new("UIGradient")
+	headerGrad.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, Color3.fromRGB(26, 33, 52)),
+		ColorSequenceKeypoint.new(1, Color3.fromRGB(17, 21, 34)),
 	})
-	titleGrad.Rotation = 90
-	titleGrad.Parent = title
-	local titlePad = Instance.new("UIPadding")
-	titlePad.PaddingLeft = UDim.new(0, 12)
-	titlePad.PaddingRight = UDim.new(0, 30)
-	titlePad.Parent = title
-	local phaseDot = Instance.new("Frame")
-	phaseDot.Name = "PhaseDot"
-	phaseDot.AnchorPoint = Vector2.new(1, 0.5)
-	phaseDot.Position = UDim2.new(1, -10, 0, 16)
-	phaseDot.Size = UDim2.new(0, 12, 0, 12)
-	phaseDot.BackgroundColor3 = Color3.fromRGB(120, 130, 150)
-	phaseDot.BorderSizePixel = 0
-	phaseDot.Parent = frame
+	headerGrad.Rotation = 90
+	headerGrad.Parent = header
+	local headerLine = Instance.new("Frame")
+	headerLine.Size = UDim2.new(1, 0, 0, 1)
+	headerLine.Position = UDim2.new(0, 0, 1, -1)
+	headerLine.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	headerLine.BackgroundTransparency = 0.92
+	headerLine.BorderSizePixel = 0
+	headerLine.Parent = header
+
+	local avatar = Instance.new("ImageLabel")
+	avatar.Name = "Avatar"
+	avatar.Size = UDim2.new(0, 50, 0, 50)
+	avatar.Position = UDim2.new(0, 12, 0, 12)
+	avatar.BackgroundColor3 = Color3.fromRGB(28, 33, 52)
+	avatar.BorderSizePixel = 0
+	avatar.Image = ""
+	avatar.Parent = header
+	local avatarCorner = Instance.new("UICorner")
+	avatarCorner.CornerRadius = UDim.new(1, 0)
+	avatarCorner.Parent = avatar
+	local avatarRing = Instance.new("UIStroke")
+	avatarRing.Color = Color3.fromRGB(53, 186, 243)
+	avatarRing.Thickness = 2
+	avatarRing.Transparency = 0.25
+	avatarRing.Parent = avatar
+
+	local nameLabel = Instance.new("TextLabel")
+	nameLabel.Size = UDim2.new(1, -112, 0, 20)
+	nameLabel.Position = UDim2.new(0, 72, 0, 12)
+	nameLabel.BackgroundTransparency = 1
+	nameLabel.Text = player.Name
+	nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+	nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+	nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
+	nameLabel.Font = Enum.Font.GothamBold
+	nameLabel.TextSize = 14
+	nameLabel.Parent = header
+
+	local subLabel = Instance.new("TextLabel")
+	subLabel.Size = UDim2.new(1, -112, 0, 16)
+	subLabel.Position = UDim2.new(0, 72, 0, 33)
+	subLabel.BackgroundTransparency = 1
+	subLabel.Text = string.format("ALT #%s  •  %s  •  %s ALTS", tostring(myAccountIndex or "?"), tostring(Settings.Mode), tostring(effectiveAccountCount))
+	subLabel.TextColor3 = Color3.fromRGB(148, 163, 190)
+	subLabel.TextXAlignment = Enum.TextXAlignment.Left
+	subLabel.TextTruncate = Enum.TextTruncate.AtEnd
+	subLabel.Font = Enum.Font.Gotham
+	subLabel.TextSize = 11
+	subLabel.Parent = header
+	localHeaderSub = subLabel
+
+	local pill = Instance.new("Frame")
+	pill.Name = "PhasePill"
+	pill.AnchorPoint = Vector2.new(1, 0)
+	pill.Position = UDim2.new(1, -12, 0, 48)
+	pill.Size = UDim2.new(0, 10, 0, 10)
+	pill.BackgroundColor3 = Color3.fromRGB(120, 130, 150)
+	pill.BorderSizePixel = 0
+	pill.Parent = header
 	local dotCorner = Instance.new("UICorner")
 	dotCorner.CornerRadius = UDim.new(1, 0)
-	dotCorner.Parent = phaseDot
-	localAltDot = phaseDot
+	dotCorner.Parent = pill
+	localAltDot = pill
+
+	local phaseDotLabel = Instance.new("TextLabel")
+	phaseDotLabel.Name = "PhaseWord"
+	phaseDotLabel.AnchorPoint = Vector2.new(1, 0)
+	phaseDotLabel.Position = UDim2.new(1, -28, 0, 50)
+	phaseDotLabel.Size = UDim2.new(0, 120, 0, 14)
+	phaseDotLabel.BackgroundTransparency = 1
+	phaseDotLabel.Text = "STARTING"
+	phaseDotLabel.TextXAlignment = Enum.TextXAlignment.Right
+	phaseDotLabel.TextColor3 = Color3.fromRGB(148, 163, 190)
+	phaseDotLabel.Font = Enum.Font.GothamBold
+	phaseDotLabel.TextSize = 10
+	phaseDotLabel.Parent = header
+
+	-- Progress block.
+	local progressTitle = Instance.new("TextLabel")
+	progressTitle.Size = UDim2.new(1, -24, 0, 14)
+	progressTitle.Position = UDim2.new(0, 12, 0, 82)
+	progressTitle.BackgroundTransparency = 1
+	progressTitle.Text = "PROGRESS"
+	progressTitle.TextXAlignment = Enum.TextXAlignment.Left
+	progressTitle.TextColor3 = Color3.fromRGB(110, 124, 150)
+	progressTitle.Font = Enum.Font.GothamBold
+	progressTitle.TextSize = 10
+	progressTitle.Parent = frame
+
+	local progressCount = Instance.new("TextLabel")
+	progressCount.Name = "ProgressCount"
+	progressCount.AnchorPoint = Vector2.new(1, 0)
+	progressCount.Position = UDim2.new(1, -12, 0, 82)
+	progressCount.Size = UDim2.new(0, 140, 0, 14)
+	progressCount.BackgroundTransparency = 1
+	progressCount.Text = "0 / 0"
+	progressCount.TextXAlignment = Enum.TextXAlignment.Right
+	progressCount.TextColor3 = Color3.fromRGB(203, 213, 228)
+	progressCount.Font = Enum.Font.Code
+	progressCount.TextSize = 11
+	progressCount.Parent = frame
+	localProgressLabel = progressCount
+
+	local track = Instance.new("Frame")
+	track.Size = UDim2.new(1, -24, 0, 7)
+	track.Position = UDim2.new(0, 12, 0, 100)
+	track.BackgroundColor3 = Color3.fromRGB(10, 13, 22)
+	track.BorderSizePixel = 0
+	track.Parent = frame
+	local trackCorner = Instance.new("UICorner")
+	trackCorner.CornerRadius = UDim.new(1, 0)
+	trackCorner.Parent = track
+	local fill = Instance.new("Frame")
+	fill.Size = UDim2.new(0, 0, 1, 0)
+	fill.BackgroundColor3 = Color3.fromRGB(53, 186, 243)
+	fill.BorderSizePixel = 0
+	fill.Parent = track
+	local fillCorner = Instance.new("UICorner")
+	fillCorner.CornerRadius = UDim.new(1, 0)
+	fillCorner.Parent = fill
+	local fillGrad = Instance.new("UIGradient")
+	fillGrad.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, Color3.fromRGB(80, 205, 255)),
+		ColorSequenceKeypoint.new(1, Color3.fromRGB(32, 140, 210)),
+	})
+	fillGrad.Parent = fill
+	localProgressFill = fill
 
 	local content = Instance.new("Frame")
-	content.Size = UDim2.new(1, -20, 1, -44)
-	content.Position = UDim2.new(0, 10, 0, 38)
+	content.Size = UDim2.new(1, -24, 0, 208)
+	content.Position = UDim2.new(0, 12, 0, 116)
 	content.BackgroundTransparency = 1
 	content.Parent = frame
 
@@ -339,36 +447,77 @@ local function createLocalUI()
 	layout.Parent = content
 
 	local setters: {[string]: (string) -> ()} = {}
+	local phaseWord: TextLabel? = header:FindFirstChild("PhaseWord") :: TextLabel?
 	local function addRow(key: string, prefix: string, order: number)
-		local row = Instance.new("TextLabel")
-		row.Size = UDim2.new(1, 0, 0, 22)
-		row.BackgroundColor3 = Color3.fromRGB(22, 27, 40)
+		local row = Instance.new("Frame")
+		row.Size = UDim2.new(1, 0, 0, 24)
+		row.BackgroundColor3 = Color3.fromRGB(21, 26, 41)
 		row.BorderSizePixel = 0
-		row.Text = prefix .. ": —"
-		row.TextColor3 = Color3.fromRGB(226, 232, 244)
-		row.TextXAlignment = Enum.TextXAlignment.Left
-		row.TextTruncate = Enum.TextTruncate.AtEnd
-		row.Font = Enum.Font.Code
-		row.TextSize = 13
 		row.LayoutOrder = order
 		row.Parent = content
-		local rowPad = Instance.new("UIPadding")
-		rowPad.PaddingLeft = UDim.new(0, 10)
-		rowPad.PaddingRight = UDim.new(0, 8)
-		rowPad.Parent = row
 		local rowCorner = Instance.new("UICorner")
-		rowCorner.CornerRadius = UDim.new(0, 6)
+		rowCorner.CornerRadius = UDim.new(0, 7)
 		rowCorner.Parent = row
-		setters[key] = function(value: string) row.Text = prefix .. ": " .. value end
+		local rowStroke = Instance.new("UIStroke")
+		rowStroke.Color = Color3.fromRGB(52, 64, 90)
+		rowStroke.Thickness = 1
+		rowStroke.Transparency = 0.75
+		rowStroke.Parent = row
+		local keyLabel = Instance.new("TextLabel")
+		keyLabel.Size = UDim2.new(0, 92, 1, 0)
+		keyLabel.Position = UDim2.new(0, 10, 0, 0)
+		keyLabel.BackgroundTransparency = 1
+		keyLabel.Text = prefix:upper()
+		keyLabel.TextColor3 = Color3.fromRGB(130, 143, 168)
+		keyLabel.TextXAlignment = Enum.TextXAlignment.Left
+		keyLabel.Font = Enum.Font.GothamBold
+		keyLabel.TextSize = 10
+		keyLabel.Parent = row
+		local valueLabel = Instance.new("TextLabel")
+		valueLabel.Size = UDim2.new(1, -110, 1, 0)
+		valueLabel.Position = UDim2.new(0, 102, 0, 0)
+		valueLabel.BackgroundTransparency = 1
+		valueLabel.Text = "—"
+		valueLabel.TextColor3 = Color3.fromRGB(232, 238, 250)
+		valueLabel.TextXAlignment = Enum.TextXAlignment.Right
+		valueLabel.TextTruncate = Enum.TextTruncate.AtEnd
+		valueLabel.Font = Enum.Font.Code
+		valueLabel.TextSize = 12
+		valueLabel.Parent = row
+		setters[key] = function(value: string)
+			valueLabel.Text = value
+			if key == "phase" and phaseWord then
+				phaseWord.Text = value:upper()
+			end
+		end
 	end
 
 	addRow("phase", "Phase", 1)
 	addRow("resets", "Resets", 2)
-	addRow("dropOwn", "Drop (own)", 3)
-	addRow("dropGlobal", "Drop (total)", 4)
+	addRow("dropOwn", "Drop own", 3)
+	addRow("dropGlobal", "Drop total", 4)
 	addRow("elapsed", "Elapsed", 5)
 	addRow("eta", "ETA", 6)
 	addRow("last", "Last", 7)
+
+	local footer = Instance.new("TextLabel")
+	footer.Size = UDim2.new(1, -24, 0, 14)
+	footer.Position = UDim2.new(0, 12, 1, -20)
+	footer.BackgroundTransparency = 1
+	footer.Text = "AUTO-DROP RUNNING  •  DRAG TO MOVE"
+	footer.TextColor3 = Color3.fromRGB(90, 102, 128)
+	footer.Font = Enum.Font.GothamBold
+	footer.TextSize = 9
+	footer.TextXAlignment = Enum.TextXAlignment.Center
+	footer.Parent = frame
+
+	task.spawn(function()
+		local thumb: string? = nil
+		pcall(function()
+			thumb = Players:GetUserThumbnailAsync(player.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size100x100)
+		end)
+		if thumb ~= nil and avatar.Parent ~= nil then avatar.Image = (thumb :: string) end
+	end)
 
 	makeDraggable(frame)
 	localSetters = setters
@@ -389,6 +538,10 @@ local HostObs: {[number]: {deaths: number, alive: boolean, seen: boolean}} = {}
 -- cash read, taken before drops pile up, so Received = Now - Start.
 local hostClientLabels: {[string]: TextLabel}? = nil
 local hostClientAvatar: ImageLabel? = nil
+local hostAvatars: {[number]: ImageLabel}? = nil
+local hostAvatarRings: {[number]: UIStroke}? = nil
+local hostOverallFill: Frame? = nil
+local hostOverallLabel: TextLabel? = nil
 local clientCashStart: number? = nil
 local clientCashNow: number? = nil
 local clientCachedName: string? = nil
@@ -513,30 +666,30 @@ local function createHostUI()
 
 	local frame = Instance.new("Frame")
 	frame.Name = "Panel"
-	frame.Size = UDim2.new(0, 640, 0, 344)
+	frame.Size = UDim2.new(0, 700, 0, 452)
 	frame.AnchorPoint = Vector2.new(0.5, 0.5)
 	frame.Position = UDim2.new(0.5, 0, 0.5, 0)
-	frame.BackgroundColor3 = Color3.fromRGB(13, 16, 24)
+	frame.BackgroundColor3 = Color3.fromRGB(13, 16, 26)
 	frame.BorderSizePixel = 0
 	frame.Active = true
 	frame.ClipsDescendants = true
 	frame.Parent = ScreenGui
 
 	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, 10)
+	corner.CornerRadius = UDim.new(0, 12)
 	corner.Parent = frame
 
 	local stroke = Instance.new("UIStroke")
 	stroke.Color = Color3.fromRGB(190, 60, 72)
-	stroke.Thickness = 1.5
-	stroke.Transparency = 0.25
+	stroke.Thickness = 1
+	stroke.Transparency = 0.3
 	stroke.Parent = frame
 
 	local title = Instance.new("TextLabel")
-	title.Size = UDim2.new(1, 0, 0, 40)
+	title.Size = UDim2.new(1, 0, 0, 44)
 	title.BackgroundColor3 = Color3.fromRGB(200, 55, 70)
 	title.BorderSizePixel = 0
-	title.Text = "  DROPPER — HOST ADMIN PANEL"
+	title.Text = "  DROPPER  •  HOST CONSOLE"
 	title.TextColor3 = Color3.fromRGB(255, 255, 255)
 	title.TextXAlignment = Enum.TextXAlignment.Left
 	title.Font = Enum.Font.GothamBold
@@ -544,8 +697,8 @@ local function createHostUI()
 	title.Parent = frame
 	local titleGrad = Instance.new("UIGradient")
 	titleGrad.Color = ColorSequence.new({
-		ColorSequenceKeypoint.new(0, Color3.fromRGB(226, 74, 88)),
-		ColorSequenceKeypoint.new(1, Color3.fromRGB(148, 30, 42)),
+		ColorSequenceKeypoint.new(0, Color3.fromRGB(228, 78, 94)),
+		ColorSequenceKeypoint.new(1, Color3.fromRGB(150, 30, 44)),
 	})
 	titleGrad.Rotation = 90
 	titleGrad.Parent = title
@@ -553,9 +706,19 @@ local function createHostUI()
 	titlePad.PaddingLeft = UDim.new(0, 14)
 	titlePad.PaddingRight = UDim.new(0, 14)
 	titlePad.Parent = title
+	local liveDot = Instance.new("Frame")
+	liveDot.AnchorPoint = Vector2.new(1, 0.5)
+	liveDot.Position = UDim2.new(1, -14, 0, 22)
+	liveDot.Size = UDim2.new(0, 10, 0, 10)
+	liveDot.BackgroundColor3 = Color3.fromRGB(86, 224, 135)
+	liveDot.BorderSizePixel = 0
+	liveDot.Parent = frame
+	local liveDotCorner = Instance.new("UICorner")
+	liveDotCorner.CornerRadius = UDim.new(1, 0)
+	liveDotCorner.Parent = liveDot
 	local subtitle = Instance.new("TextLabel")
-	subtitle.Size = UDim2.new(1, -28, 0, 16)
-	subtitle.Position = UDim2.new(0, 14, 0, 42)
+	subtitle.Size = UDim2.new(1, -44, 0, 16)
+	subtitle.Position = UDim2.new(0, 14, 0, 48)
 	subtitle.BackgroundTransparency = 1
 	subtitle.Text = string.format("%s  •  Target %s  •  %s alts", tostring(Settings.Mode), comma(Settings.TargetDrop), comma(#Settings.AccountUserIds))
 	subtitle.TextColor3 = Color3.fromRGB(148, 163, 190)
@@ -564,10 +727,60 @@ local function createHostUI()
 	subtitle.TextSize = 12
 	subtitle.Parent = frame
 
+	local summary = Instance.new("Frame")
+	summary.Size = UDim2.new(1, -20, 0, 44)
+	summary.Position = UDim2.new(0, 10, 0, 68)
+	summary.BackgroundColor3 = Color3.fromRGB(21, 26, 41)
+	summary.BorderSizePixel = 0
+	summary.Parent = frame
+	local summaryCorner = Instance.new("UICorner")
+	summaryCorner.CornerRadius = UDim.new(0, 8)
+	summaryCorner.Parent = summary
+	local summaryStroke = Instance.new("UIStroke")
+	summaryStroke.Color = Color3.fromRGB(52, 64, 90)
+	summaryStroke.Thickness = 1
+	summaryStroke.Transparency = 0.6
+	summaryStroke.Parent = summary
+	local overallLabel = Instance.new("TextLabel")
+	overallLabel.Size = UDim2.new(1, -20, 0, 16)
+	overallLabel.Position = UDim2.new(0, 10, 0, 5)
+	overallLabel.BackgroundTransparency = 1
+	overallLabel.Text = "OVERALL  •  0 / 0"
+	overallLabel.TextXAlignment = Enum.TextXAlignment.Left
+	overallLabel.TextColor3 = Color3.fromRGB(203, 213, 228)
+	overallLabel.Font = Enum.Font.GothamBold
+	overallLabel.TextSize = 11
+	overallLabel.Parent = summary
+	hostOverallLabel = overallLabel
+	local overallTrack = Instance.new("Frame")
+	overallTrack.Size = UDim2.new(1, -20, 0, 7)
+	overallTrack.Position = UDim2.new(0, 10, 0, 27)
+	overallTrack.BackgroundColor3 = Color3.fromRGB(10, 13, 22)
+	overallTrack.BorderSizePixel = 0
+	overallTrack.Parent = summary
+	local overallTrackCorner = Instance.new("UICorner")
+	overallTrackCorner.CornerRadius = UDim.new(1, 0)
+	overallTrackCorner.Parent = overallTrack
+	local overallFill = Instance.new("Frame")
+	overallFill.Size = UDim2.new(0, 0, 1, 0)
+	overallFill.BackgroundColor3 = Color3.fromRGB(86, 224, 135)
+	overallFill.BorderSizePixel = 0
+	overallFill.Parent = overallTrack
+	local overallFillCorner = Instance.new("UICorner")
+	overallFillCorner.CornerRadius = UDim.new(1, 0)
+	overallFillCorner.Parent = overallFill
+	local overallFillGrad = Instance.new("UIGradient")
+	overallFillGrad.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, Color3.fromRGB(105, 235, 150)),
+		ColorSequenceKeypoint.new(1, Color3.fromRGB(52, 190, 110)),
+	})
+	overallFillGrad.Parent = overallFill
+	hostOverallFill = overallFill
+
 	-- Tabs: Alts + Time + Client.
 	local tabBar = Instance.new("Frame")
-	tabBar.Size = UDim2.new(1, -20, 0, 28)
-	tabBar.Position = UDim2.new(0, 10, 0, 62)
+	tabBar.Size = UDim2.new(1, -20, 0, 30)
+	tabBar.Position = UDim2.new(0, 10, 0, 118)
 	tabBar.BackgroundTransparency = 1
 	tabBar.Parent = frame
 
@@ -611,23 +824,23 @@ local function createHostUI()
 
 	local altsPage = Instance.new("Frame")
 	altsPage.Name = "AltsPage"
-	altsPage.Size = UDim2.new(1, -20, 1, -104)
-	altsPage.Position = UDim2.new(0, 10, 0, 94)
+	altsPage.Size = UDim2.new(1, -20, 1, -162)
+	altsPage.Position = UDim2.new(0, 10, 0, 152)
 	altsPage.BackgroundTransparency = 1
 	altsPage.Parent = frame
 
 	local timePage = Instance.new("Frame")
 	timePage.Name = "TimePage"
-	timePage.Size = UDim2.new(1, -20, 1, -104)
-	timePage.Position = UDim2.new(0, 10, 0, 94)
+	timePage.Size = UDim2.new(1, -20, 1, -162)
+	timePage.Position = UDim2.new(0, 10, 0, 152)
 	timePage.BackgroundTransparency = 1
 	timePage.Visible = false
 	timePage.Parent = frame
 
 	local clientPage = Instance.new("Frame")
 	clientPage.Name = "ClientPage"
-	clientPage.Size = UDim2.new(1, -20, 1, -104)
-	clientPage.Position = UDim2.new(0, 10, 0, 94)
+	clientPage.Size = UDim2.new(1, -20, 1, -162)
+	clientPage.Position = UDim2.new(0, 10, 0, 152)
 	clientPage.BackgroundTransparency = 1
 	clientPage.Visible = false
 	clientPage.Parent = frame
@@ -651,89 +864,137 @@ local function createHostUI()
 	clientTab.MouseButton1Click:Connect(function() selectTab("Client") end)
 
 	local COLS = {
-		{key = "idx",    label = "#",       x = 0,   w = 34},
-		{key = "name",   label = "Account", x = 34,  w = 130},
-		{key = "status", label = "Status",  x = 164, w = 90},
-		{key = "resets", label = "Resets",  x = 254, w = 110},
-		{key = "drop",   label = "Drop",    x = 364, w = 130},
-		{key = "eta",    label = "ETA",     x = 494, w = 120},
+		{key = "avatar", label = "",        x = 0,   w = 42},
+		{key = "idx",    label = "#",       x = 42,  w = 30},
+		{key = "name",   label = "Account", x = 72,  w = 138},
+		{key = "status", label = "Status",  x = 210, w = 86},
+		{key = "resets", label = "Resets",  x = 296, w = 104},
+		{key = "drop",   label = "Drop",    x = 400, w = 140},
+		{key = "eta",    label = "ETA",     x = 540, w = 130},
 	}
 
 	local header = Instance.new("Frame")
 	header.Size = UDim2.new(1, 0, 0, 24)
 	header.Position = UDim2.new(0, 0, 0, 0)
-	header.BackgroundColor3 = Color3.fromRGB(28, 33, 48)
+	header.BackgroundColor3 = Color3.fromRGB(28, 33, 52)
 	header.BorderSizePixel = 0
 	header.Parent = altsPage
 
 	local hCorner = Instance.new("UICorner")
-	hCorner.CornerRadius = UDim.new(0, 6)
+	hCorner.CornerRadius = UDim.new(0, 7)
 	hCorner.Parent = header
 
 	local hStroke = Instance.new("UIStroke")
 	hStroke.Color = Color3.fromRGB(52, 64, 90)
 	hStroke.Thickness = 1
-	hStroke.Transparency = 0.5
+	hStroke.Transparency = 0.55
 	hStroke.Parent = header
 
 	for _, col in ipairs(COLS) do
+		if col.key == "avatar" then continue end
 		local lbl = Instance.new("TextLabel")
 		lbl.Position = UDim2.new(0, col.x + 10, 0, 0)
 		lbl.Size = UDim2.new(0, col.w - 10, 1, 0)
 		lbl.BackgroundTransparency = 1
 		lbl.Text = col.label:upper()
 		lbl.TextXAlignment = Enum.TextXAlignment.Left
-		lbl.TextColor3 = Color3.fromRGB(148, 163, 190)
+		lbl.TextColor3 = Color3.fromRGB(130, 143, 168)
 		lbl.Font = Enum.Font.GothamBold
-		lbl.TextSize = 11
+		lbl.TextSize = 10
 		lbl.Parent = header
 	end
 
-	local rowsFrame = Instance.new("Frame")
+	local rowsFrame = Instance.new("ScrollingFrame")
 	rowsFrame.Size = UDim2.new(1, 0, 1, -28)
 	rowsFrame.Position = UDim2.new(0, 0, 0, 28)
 	rowsFrame.BackgroundTransparency = 1
+	rowsFrame.BorderSizePixel = 0
+	rowsFrame.ScrollBarThickness = 3
+	rowsFrame.ScrollBarImageColor3 = Color3.fromRGB(52, 64, 90)
+	rowsFrame.CanvasSize = UDim2.new()
+	rowsFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	rowsFrame.ScrollingDirection = Enum.ScrollingDirection.Y
 	rowsFrame.Parent = altsPage
 
 	local rowLayout = Instance.new("UIListLayout")
-	rowLayout.Padding = UDim.new(0, 4)
+	rowLayout.Padding = UDim.new(0, 5)
 	rowLayout.SortOrder = Enum.SortOrder.LayoutOrder
 	rowLayout.Parent = rowsFrame
 
 	local cells: {[number]: {[string]: TextLabel}} = {}
 	local bars: {[number]: Frame} = {}
+	local avatars: {[number]: ImageLabel} = {}
+	local rings: {[number]: UIStroke} = {}
 
 	for i, uid in ipairs(Settings.AccountUserIds) do
 		local rowFrame = Instance.new("Frame")
-		rowFrame.Size = UDim2.new(1, 0, 0, 24)
-		rowFrame.BackgroundColor3 = (i % 2 == 0) and Color3.fromRGB(24, 29, 43) or Color3.fromRGB(20, 25, 37)
+		rowFrame.Size = UDim2.new(1, -4, 0, 38)
+		rowFrame.BackgroundColor3 = (i % 2 == 0) and Color3.fromRGB(24, 29, 45) or Color3.fromRGB(20, 25, 39)
 		rowFrame.BorderSizePixel = 0
 		rowFrame.LayoutOrder = i
 		rowFrame.Parent = rowsFrame
 		local rowCorner = Instance.new("UICorner")
-		rowCorner.CornerRadius = UDim.new(0, 6)
+		rowCorner.CornerRadius = UDim.new(0, 8)
 		rowCorner.Parent = rowFrame
+		local rowStroke = Instance.new("UIStroke")
+		rowStroke.Color = Color3.fromRGB(52, 64, 90)
+		rowStroke.Thickness = 1
+		rowStroke.Transparency = 0.75
+		rowStroke.Parent = rowFrame
+
+		local altAvatar = Instance.new("ImageLabel")
+		altAvatar.Size = UDim2.new(0, 26, 0, 26)
+		altAvatar.Position = UDim2.new(0, 8, 0.5, -13)
+		altAvatar.BackgroundColor3 = Color3.fromRGB(28, 33, 52)
+		altAvatar.BorderSizePixel = 0
+		altAvatar.Image = ""
+		altAvatar.Parent = rowFrame
+		local altCorner = Instance.new("UICorner")
+		altCorner.CornerRadius = UDim.new(1, 0)
+		altCorner.Parent = altAvatar
+		local altRing = Instance.new("UIStroke")
+		altRing.Color = Color3.fromRGB(110, 124, 150)
+		altRing.Thickness = 1.5
+		altRing.Transparency = 0.2
+		altRing.Parent = altAvatar
+		avatars[uid] = altAvatar
+		rings[uid] = altRing
+		local capturedAvatar = altAvatar
+		local capturedUid = uid
+		task.spawn(function()
+			local thumb: string? = nil
+			pcall(function()
+				thumb = Players:GetUserThumbnailAsync(capturedUid, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size100x100)
+			end)
+			if thumb ~= nil and capturedAvatar.Parent ~= nil then capturedAvatar.Image = (thumb :: string) end
+			if clientCachedName == nil then
+				pcall(function()
+					Players:GetNameFromUserIdAsync(capturedUid)
+				end)
+			end
+		end)
 
 		cells[uid] = {}
 		for _, col in ipairs(COLS) do
+			if col.key == "avatar" then continue end
 			local lbl = Instance.new("TextLabel")
 			lbl.Position = UDim2.new(0, col.x + 10, 0, 0)
-			lbl.Size = UDim2.new(0, col.w - 10, 1, -5)
+			lbl.Size = UDim2.new(0, col.w - 10, 1, -6)
 			lbl.BackgroundTransparency = 1
 			lbl.Text = "—"
 			lbl.TextXAlignment = Enum.TextXAlignment.Left
 			lbl.TextColor3 = Color3.fromRGB(226, 232, 244)
 			lbl.Font = Enum.Font.Code
-			lbl.TextSize = 13
+			lbl.TextSize = 12
 			lbl.TextTruncate = Enum.TextTruncate.AtEnd
 			lbl.Parent = rowFrame
 			cells[uid][col.key] = lbl
 		end
 		local track = Instance.new("Frame")
 		track.AnchorPoint = Vector2.new(0, 1)
-		track.Position = UDim2.new(0, 10, 1, -5)
-		track.Size = UDim2.new(1, -20, 0, 3)
-		track.BackgroundColor3 = Color3.fromRGB(10, 13, 20)
+		track.Position = UDim2.new(0, 44, 1, -5)
+		track.Size = UDim2.new(1, -54, 0, 3)
+		track.BackgroundColor3 = Color3.fromRGB(10, 13, 22)
 		track.BorderSizePixel = 0
 		track.Parent = rowFrame
 		local trackCorner = Instance.new("UICorner")
@@ -901,6 +1162,8 @@ local function createHostUI()
 	makeDraggable(frame)
 	hostCells = cells
 	hostBars = bars
+	hostAvatars = avatars
+	hostAvatarRings = rings
 	hostTimeLabels = timeLabels
 	hostClientLabels = clientLabels
 	hostClientAvatar = avatar
@@ -944,6 +1207,21 @@ local function updateLocalUI()
 		end
 	end
 	localSetters.resets(string.format("%s / %s", comma(s.resetsDone), comma(s.resetsTotal)))
+	if localProgressFill then
+		local progress = 0
+		if s.resetsTotal > 0 then progress = math.clamp(s.resetsDone / s.resetsTotal, 0, 1) end
+		localProgressFill.Size = UDim2.new(progress, 0, 1, 0)
+		if s.finished then
+			localProgressFill.BackgroundColor3 = Color3.fromRGB(86, 224, 135)
+		else
+			localProgressFill.BackgroundColor3 = Color3.fromRGB(53, 186, 243)
+		end
+	end
+	if localProgressLabel then
+		local percent = 0
+		if s.resetsTotal > 0 then percent = math.floor(s.resetsDone / s.resetsTotal * 100 + 0.5) end
+		localProgressLabel.Text = string.format("%s / %s  •  %d%%", comma(s.resetsDone), comma(s.resetsTotal), percent)
+	end
 	localSetters.dropOwn(string.format("%s / %s", comma(dropOwn), comma(dropOwnTotal)))
 	localSetters.dropGlobal(string.format("%s / %s", comma(dropGlobal), comma(dropGlobalTotal)))
 	localSetters.elapsed(formatTime(elapsed))
@@ -983,22 +1261,26 @@ local function updateHostUI()
 		local p = Players:GetPlayerByUserId(uid)
 
 		cells.idx.Text = tostring(i)
+		local ring = hostAvatarRings and hostAvatarRings[uid]
 
 		if not p then
 			cells.name.Text = "userid " .. tostring(uid)
-			cells.status.Text = "Not in server"
+			cells.status.Text = "Offline"
 			cells.status.TextColor3 = Color3.fromRGB(150, 150, 150)
 			cells.resets.Text = "—"
 			cells.drop.Text = "—"
 			cells.eta.Text = "—"
+			if ring then ring.Color = Color3.fromRGB(110, 124, 150) end
 		else
 			cells.name.Text = p.Name
 			if obs and obs.alive then
-				cells.status.Text = "Alive"
-				cells.status.TextColor3 = Color3.fromRGB(120, 220, 140)
+				cells.status.Text = "● Alive"
+				cells.status.TextColor3 = Color3.fromRGB(105, 235, 150)
+				if ring then ring.Color = Color3.fromRGB(86, 224, 135) end
 			else
-				cells.status.Text = "Dead"
-				cells.status.TextColor3 = Color3.fromRGB(230, 120, 120)
+				cells.status.Text = "● Dead"
+				cells.status.TextColor3 = Color3.fromRGB(240, 130, 130)
+				if ring then ring.Color = Color3.fromRGB(230, 110, 120) end
 			end
 
 			local d = (obs and obs.deaths) or 0
@@ -1025,6 +1307,18 @@ local function updateHostUI()
 			if needCount > 0 then progress = math.clamp(doneCount / needCount, 0, 1) end
 			bar.Size = UDim2.new(progress, 0, 1, 0)
 		end
+	end
+
+	if hostOverallFill and hostOverallLabel then
+		local overallProgress = 0
+		if totalDrops > 0 then overallProgress = math.clamp(totalDeaths / totalDrops, 0, 1) end
+		hostOverallFill.Size = UDim2.new(overallProgress, 0, 1, 0)
+		local onlineCount = 0
+		for _, uid in ipairs(Settings.AccountUserIds) do
+			if Players:GetPlayerByUserId(uid) then onlineCount += 1 end
+		end
+		local percent = math.floor(overallProgress * 100 + 0.5)
+		hostOverallLabel.Text = string.format("OVERALL  •  %s / %s  (%d%%)  •  %d/%d ONLINE", comma(totalDeaths), comma(totalDrops), percent, onlineCount, #Settings.AccountUserIds)
 	end
 
 	-- Time page: estimate on top, live remaining under it, frozen when done.
