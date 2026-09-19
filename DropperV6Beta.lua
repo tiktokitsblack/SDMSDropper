@@ -1143,7 +1143,7 @@ local function teleportToClient(character: Model): boolean
 	local function slotCFrame(base: CFrame): CFrame
 		if myAccountIndex ~= nil and effectiveAccountCount > 1 then
 			local angle = (((myAccountIndex :: number) - 1) / effectiveAccountCount) * math.pi * 2
-			return base + Vector3.new(math.cos(angle) * 4, 0, math.sin(angle) * 4)
+			return base + Vector3.new(math.cos(angle) * 5, 0, math.sin(angle) * 5)
 		end
 		return base
 	end
@@ -1204,34 +1204,13 @@ local function selfKill(character: Model): boolean
 	humanoid.Health = 0 return true
 end
 local lastNoClientWarnAt: number = 0
--- Wave sync (client-only, executor-safe). Each alt owns exactly one flag:
--- DropperReady_<UserId>. Names are unique per alt so concurrent check-ins
--- can never duplicate or race, and no server script is needed.
-local myReadyFlag: BoolValue? = nil
-local function readyKey(accountUserId: number): string
-	return "DropperReady_" .. tostring(accountUserId)
-end
-local function setSyncReady(ready: boolean)
-	if not isAlt then return end
-	if not myReadyFlag then
-		local existing = ReplicatedStorage:FindFirstChild(readyKey(player.UserId))
-		if existing and existing:IsA("BoolValue") then
-			myReadyFlag = existing :: BoolValue
-		else
-			local created = Instance.new("BoolValue")
-			created.Name = readyKey(player.UserId)
-			created.Value = ready
-			created.Parent = ReplicatedStorage
-			myReadyFlag = created
-		end
-	end
-	local flag = myReadyFlag
-	if flag then
-		pcall(function()
-			flag.Value = ready
-		end)
-	end
-end
+-- Wave sync (client-only, pure reads). An alt counts as ready when its
+-- character is ACTUALLY standing at the client. Every client in the
+-- server can see every other player's character, so this needs no
+-- remote writes at all - nothing to fail, nothing to go stale.
+-- Nobody resets until every alt in the server is at the client, so
+-- all drops in a wave land on the client together.
+local READY_RADIUS = 15
 local function presentAltUserIds(): {number}
 	local present: {number} = {}
 	for _, accountUserId in ipairs(Settings.AccountUserIds) do
@@ -1241,8 +1220,20 @@ local function presentAltUserIds(): {number}
 	end
 	return present
 end
+local function countAltsAtClient(clientRoot: BasePart): (number, number)
+	local present = presentAltUserIds()
+	local readyCount = 0
+	for _, accountUserId in ipairs(present) do
+		local targetPlayer = Players:GetPlayerByUserId(accountUserId)
+		local targetCharacter = targetPlayer and targetPlayer.Character
+		local targetRoot = targetCharacter and getRoot(targetCharacter)
+		if targetRoot and (targetRoot.Position - clientRoot.Position).Magnitude <= READY_RADIUS then
+			readyCount += 1
+		end
+	end
+	return readyCount, #present
+end
 local function waitForAllReady(): boolean
-	if not isAlt then return true end
 	Status.phase = "Syncing"
 	Status.last = "Waiting for alts"
 	local timeout = 15
@@ -1252,31 +1243,34 @@ local function waitForAllReady(): boolean
 	local deadline = os.clock() + timeout
 	while os.clock() < deadline do
 		if not droppingEnabled then return false end
-		local present = presentAltUserIds()
-		local allReady = true
-		for _, accountUserId in ipairs(present) do
-			local flag = ReplicatedStorage:FindFirstChild(readyKey(accountUserId))
-			local ready = false
-			if flag and flag:IsA("BoolValue") then
-				ready = (flag :: BoolValue).Value
+		if Status.finished then return false end
+		local clientRoot = getClientRoot()
+		if clientRoot then
+			local readyCount, totalCount = countAltsAtClient(clientRoot)
+			Status.last = string.format("At client %d/%d", readyCount, totalCount)
+			if totalCount > 0 and readyCount >= totalCount then
+				return true
 			end
-			if not ready then
-				allReady = false
-				break
-			end
-		end
-		if allReady then
-			Status.last = string.format("Synced (%d)", #present)
-			return true
+		else
+			Status.last = "No client"
 		end
 		task.wait(0.1)
 	end
-	Status.last = "Sync timeout"
-	warn(string.format("[%s] Sync timeout, resetting with whoever is ready.", player.Name))
-	return true
+	-- One alt is stuck. Still reset only if I am at the client myself,
+	-- so my own drop can never land back at my spawn.
+	local myCharacter = player.Character
+	local myRoot = myCharacter and getRoot(myCharacter)
+	local clientRoot = getClientRoot()
+	if myRoot and clientRoot and (myRoot.Position - clientRoot.Position).Magnitude <= READY_RADIUS then
+		Status.last = "Sync timeout (at client)"
+		warn(string.format("[%s] Sync timeout, resetting at client anyway.", player.Name))
+		return true
+	end
+	Status.last = "Sync timeout (lost)"
+	warn(string.format("[%s] Sync timeout and not at client, retrying drop.", player.Name))
+	return false
 end
 local function performDrop(): boolean
-	setSyncReady(false)
 	Status.phase = "Waiting for character"
 	if not waitWhilePaused() then return false end
 	local character = waitForCharacter() if not character then return false end
@@ -1291,7 +1285,6 @@ local function performDrop(): boolean
 	end
 	Status.phase = "Teleporting"
 	local teleported = teleportToClient(characterToKill) if not teleported then warn(string.format("[%s] Teleport failed.", player.Name)) return false end
-	setSyncReady(true)
 	Status.last = "Ready, syncing"
 	-- Paused after TP: hold at client, do NOT kill. On resume re-confirm
 	-- position (client may have moved) so the drop never lands elsewhere.
@@ -1306,9 +1299,21 @@ local function performDrop(): boolean
 			if not waitWhilePaused() then return false end
 		end
 	end
-	-- Wave sync: nobody resets until every alt in the server is teleported
-	-- and ready. A timeout falls back so one stuck alt cannot freeze the rest.
-	if not waitForAllReady() then setSyncReady(false) return false end
+	-- Wave sync: nobody resets until every alt in the server is standing
+	-- at the client. A timeout falls back so one stuck alt cannot freeze
+	-- the rest, and it still refuses to kill away from the client.
+	if not waitForAllReady() then return false end
+	-- Final gate: kill only while standing at the client's CURRENT spot,
+	-- so the reset can never happen back at my own spawn.
+	do
+		local myRoot = getRoot(characterToKill)
+		local clientRoot = getClientRoot()
+		if not myRoot or not clientRoot or (myRoot.Position - clientRoot.Position).Magnitude > READY_RADIUS + 3 then
+			Status.last = "Drifted, re-TP"
+			local reTeleported = teleportToClient(characterToKill)
+			if not reTeleported then warn(string.format("[%s] Pre-kill re-teleport failed.", player.Name)) return false end
+		end
+	end
 	-- teleportToClient already waited for replication + verified position.
 	-- Safe adds its extra KillDelay on top. Blatant kills immediately.
 	if Settings.Mode ~= "Blatant" then
@@ -1515,7 +1520,14 @@ while deathsCompleted < deathsNeeded do
 	if not character then task.wait(Settings.CheckInterval) continue end
 
 	Status.phase = "Dropping"
-	local success = performDrop()
+	-- pcall so one unexpected error retries the drop instead of silently
+	-- killing this alt's whole loop (which would look like "never drops").
+	local okDrop, success = pcall(performDrop)
+	if not okDrop then
+		warn(string.format("[%s] Drop error: %s", player.Name, tostring(success)))
+		task.wait(Settings.CheckInterval)
+		continue
+	end
 	if not success then
 		if Status.finished then
 			break
