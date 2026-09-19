@@ -140,49 +140,7 @@ pcall(function()
 	end
 end)
 
--- ============================================================
--- DropperControl: host pause/resume relay (alts actually listen).
--- Enabled=true -> dropping, Enabled=false -> paused, resume keeps
--- the same deathsCompleted on each alt (never reset).
--- Elapsed timers exclude paused time so ETA does not drift.
--- ============================================================
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local controlFolder: Instance? = nil
-local controlEnabled: BoolValue? = nil
-local controlToggle: RemoteEvent? = nil
-pcall(function()
-	controlFolder = ReplicatedStorage:WaitForChild("DropperControl", 5)
-end)
-if controlFolder then
-	pcall(function()
-		controlEnabled = (controlFolder :: Folder):WaitForChild("Enabled", 5) :: BoolValue
-	end)
-	pcall(function()
-		controlToggle = (controlFolder :: Folder):WaitForChild("Toggle", 5) :: RemoteEvent
-	end)
-end
-if not controlEnabled then
-	warn("[DropperControl] No server relay found, pause runs local-only.")
-	local fallback = Instance.new("BoolValue")
-	fallback.Name = "EnabledFallback"
-	fallback.Value = true
-	controlEnabled = fallback
-end
-local droppingEnabled: boolean = true
-pcall(function()
-	if controlEnabled then droppingEnabled = (controlEnabled :: BoolValue).Value end
-end)
-local totalPausedTime: number = 0
-local pauseStart: number? = nil
-local function activeElapsedSince(startTime: number): number
-	local now = os.clock()
-	if pauseStart ~= nil then
-		return (pauseStart :: number) - startTime - totalPausedTime
-	end
-	return now - startTime - totalPausedTime
-end
--- Changed wiring + toggle + pause-wait are attached after Status and
--- updateLocalUI/updateHostUI exist (see CONTROL WIRING below).
+-- No pause/resume: once started, alts always run. Elapsed is plain os.clock().
 
 -- ============================================================
 -- Helpers
@@ -352,7 +310,6 @@ end
 -- ============================================================
 local hostCells: {[number]: {[string]: TextLabel}}? = nil
 local hostTimeLabels: {[string]: TextLabel}? = nil
-local pauseButton: TextButton? = nil
 local hostStartTime = os.clock()
 local hostFinished = false
 local hostFinishTime: number? = nil
@@ -501,28 +458,6 @@ local function createHostUI()
 	end
 	local altsTab = makeTab("Alts", 0)
 	local timeTab = makeTab("Time", 96)
-	-- Pause/Resume dropping for all alts. Click is wired after
-	-- requestToggleDropping exists (see UI creation section).
-	local pauseBtn = Instance.new("TextButton")
-	pauseBtn.Name = "PauseButton"
-	pauseBtn.Size = UDim2.new(0, 200, 1, 0)
-	pauseBtn.Position = UDim2.new(1, -200, 0, 0)
-	if droppingEnabled then
-		pauseBtn.BackgroundColor3 = Color3.fromRGB(150, 40, 40)
-		pauseBtn.Text = "PAUSE DROPPING"
-	else
-		pauseBtn.BackgroundColor3 = Color3.fromRGB(40, 150, 70)
-		pauseBtn.Text = "RESUME DROPPING"
-	end
-	pauseBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-	pauseBtn.Font = Enum.Font.GothamBold
-	pauseBtn.TextSize = 13
-	pauseBtn.BorderSizePixel = 0
-	pauseBtn.Parent = tabBar
-	local pauseCorner = Instance.new("UICorner")
-	pauseCorner.CornerRadius = UDim.new(0, 4)
-	pauseCorner.Parent = pauseBtn
-	pauseButton = pauseBtn
 
 	local altsPage = Instance.new("Frame")
 	altsPage.Name = "AltsPage"
@@ -668,7 +603,7 @@ local function updateLocalUI()
 	if s.finished and s.finishActive ~= nil then
 		elapsed = (s.finishActive :: number)
 	else
-		elapsed = activeElapsedSince(s.startTime)
+		elapsed = os.clock() - s.startTime
 	end
 	if elapsed < 0 then elapsed = 0 end
 	local remaining = s.resetsTotal - s.resetsDone
@@ -684,19 +619,13 @@ local function updateLocalUI()
 	local dropGlobal = s.resetsDone * effectiveAccountCount * DropPerDeath
 	local dropGlobalTotal = Settings.TargetDrop
 
-	if not s.finished and not droppingEnabled then
-		localSetters.phase("Paused")
-	else
-		localSetters.phase(s.phase)
-	end
+	localSetters.phase(s.phase)
 	localSetters.resets(string.format("%s / %s", comma(s.resetsDone), comma(s.resetsTotal)))
 	localSetters.dropOwn(string.format("%s / %s", comma(dropOwn), comma(dropOwnTotal)))
 	localSetters.dropGlobal(string.format("%s / %s", comma(dropGlobal), comma(dropGlobalTotal)))
 	localSetters.elapsed(formatTime(elapsed))
 	if s.finished then
 		localSetters.eta("Done")
-	elseif not droppingEnabled then
-		localSetters.eta("Paused")
 	else
 		localSetters.eta(formatTime(eta))
 	end
@@ -714,13 +643,13 @@ local function updateHostUI()
 	if not hostFinished and totalDeaths >= totalDrops and totalDrops > 0 then
 		hostFinished = true
 		hostFinishTime = os.clock()
-		hostFinishActive = activeElapsedSince(hostStartTime)
+		hostFinishActive = os.clock() - hostStartTime
 	end
 	local elapsed: number
 	if hostFinished and hostFinishActive ~= nil then
 		elapsed = (hostFinishActive :: number)
 	else
-		elapsed = activeElapsedSince(hostStartTime)
+		elapsed = os.clock() - hostStartTime
 	end
 	if elapsed < 0 then elapsed = 0 end
 
@@ -756,8 +685,6 @@ local function updateHostUI()
 			-- ETA based on observed average, frozen at Done when finished.
 			if hostFinished then
 				cells.eta.Text = "Done"
-			elseif not droppingEnabled then
-				cells.eta.Text = "Paused"
 			else
 				local avgPerDeath = (d > 0) and (elapsed / d) or estimatedPerDrop
 				local remaining = math.max(0, deathsNeeded - d)
@@ -774,15 +701,9 @@ local function updateHostUI()
 		local avgPerReset = (totalDeaths > 0) and (elapsed / totalDeaths) or estimatedPerDrop
 		local estTotal = estimatedPerDrop * totalDrops
 		hostTimeLabels.estTotal.Text = "Estimated total: " .. formatTime(estTotal) .. string.format(" (%s resets)", comma(totalDrops))
-		if not droppingEnabled and not hostFinished then
-			hostTimeLabels.elapsed.Text = "Elapsed: " .. formatTime(elapsed) .. " (Paused)"
-		else
-			hostTimeLabels.elapsed.Text = "Elapsed: " .. formatTime(elapsed)
-		end
+		hostTimeLabels.elapsed.Text = "Elapsed: " .. formatTime(elapsed)
 		if hostFinished then
 			hostTimeLabels.remaining.Text = "Time left: Done (0 left)"
-		elseif not droppingEnabled then
-			hostTimeLabels.remaining.Text = "Time left: Paused (" .. comma(resetsRemaining) .. " left)"
 		else
 			local liveRemaining = resetsRemaining * avgPerReset
 			hostTimeLabels.remaining.Text = "Time left: " .. formatTime(liveRemaining) .. string.format(" (%s left)", comma(resetsRemaining))
@@ -793,66 +714,7 @@ local function updateHostUI()
 	end
 end
 
--- ============================================================
--- CONTROL WIRING (after Status + UI fns exist)
--- ============================================================
-local function refreshPauseButton()
-	if pauseButton then
-		if droppingEnabled then
-			pauseButton.Text = "PAUSE DROPPING"
-			pauseButton.BackgroundColor3 = Color3.fromRGB(150, 40, 40)
-		else
-			pauseButton.Text = "RESUME DROPPING"
-			pauseButton.BackgroundColor3 = Color3.fromRGB(40, 150, 70)
-		end
-	end
-end
-local function requestToggleDropping()
-	if controlToggle then
-		pcall(function()
-			(controlToggle :: RemoteEvent):FireServer()
-		end)
-	else
-		local nextValue = not droppingEnabled
-		droppingEnabled = nextValue
-		pcall(function()
-			(controlEnabled :: BoolValue).Value = nextValue
-		end)
-		print("[DropperControl] Local-only toggle -> " .. tostring(nextValue))
-	end
-end
-local function waitWhilePaused(): boolean
-	while not droppingEnabled do
-		if Status.finished then return false end
-		local stillMine = true
-		pcall(function()
-			local g = _G :: any
-			stillMine = (g.DropperRunId :: any) == runId
-		end)
-		if not stillMine then return false end
-		Status.phase = "Paused"
-		task.wait(0.25)
-	end
-	return true
-end
-if controlEnabled and controlEnabled:IsA("BoolValue") then
-	(controlEnabled :: BoolValue).Changed:Connect(function(newValue: boolean)
-		droppingEnabled = newValue
-		if not newValue then
-			pauseStart = os.clock()
-			print("[DropperControl] Paused by host. Alts hold position, counts kept.")
-		else
-			if pauseStart ~= nil then
-				totalPausedTime += os.clock() - (pauseStart :: number)
-				pauseStart = nil
-			end
-			print("[DropperControl] Resumed by host. Alts continue from same count.")
-		end
-		refreshPauseButton()
-		pcall(updateLocalUI)
-		pcall(updateHostUI)
-	end)
-end
+-- No control wiring: no pause/resume, alts run straight through.
 
 -- ============================================================
 -- Startup banner
@@ -1204,6 +1066,7 @@ local function selfKill(character: Model): boolean
 	humanoid.Health = 0 return true
 end
 local lastNoClientWarnAt: number = 0
+local teleportFailStreak = 0
 -- Wave sync (client-only, pure reads). An alt counts as ready when its
 -- character is ACTUALLY standing at the client. Every client in the
 -- server can see every other player's character, so this needs no
@@ -1242,7 +1105,6 @@ local function waitForAllReady(): boolean
 	end
 	local deadline = os.clock() + timeout
 	while os.clock() < deadline do
-		if not droppingEnabled then return false end
 		if Status.finished then return false end
 		local clientRoot = getClientRoot()
 		if clientRoot then
@@ -1272,7 +1134,6 @@ local function waitForAllReady(): boolean
 end
 local function performDrop(): boolean
 	Status.phase = "Waiting for character"
-	if not waitWhilePaused() then return false end
 	local character = waitForCharacter() if not character then return false end
 	local characterToKill = character
 	if not getClient() then
@@ -1284,19 +1145,23 @@ local function performDrop(): boolean
 		return false
 	end
 	Status.phase = "Teleporting"
-	local teleported = teleportToClient(characterToKill) if not teleported then warn(string.format("[%s] Teleport failed.", player.Name)) return false end
+	local teleported = teleportToClient(characterToKill)
+	if not teleported then
+		teleportFailStreak += 1
+		warn(string.format("[%s] Teleport failed.", player.Name))
+		return false
+	end
+	teleportFailStreak = 0
 	Status.last = "Ready, syncing"
-	-- Paused after TP: hold at client, do NOT kill. On resume re-confirm
-	-- position (client may have moved) so the drop never lands elsewhere.
-	if not waitWhilePaused() then return false end
-	if player.Character ~= characterToKill then warn(string.format("[%s] Character changed while paused.", player.Name)) return false end
+	-- Character may have changed during the teleport yields, so re-confirm
+	-- position (client may have moved) before killing at the client.
+	if player.Character ~= characterToKill then warn(string.format("[%s] Character changed during teleport.", player.Name)) return false end
 	do
 		local nowRoot = getRoot(characterToKill)
 		local freshClient = getClientRoot()
 		if nowRoot and freshClient and (nowRoot.Position - freshClient.Position).Magnitude > 12 then
 			local reTeleported = teleportToClient(characterToKill)
-			if not reTeleported then warn(string.format("[%s] Re-teleport after pause failed.", player.Name)) return false end
-			if not waitWhilePaused() then return false end
+			if not reTeleported then teleportFailStreak += 1 warn(string.format("[%s] Re-teleport failed.", player.Name)) return false end
 		end
 	end
 	-- Wave sync: nobody resets until every alt in the server is standing
@@ -1311,7 +1176,7 @@ local function performDrop(): boolean
 		if not myRoot or not clientRoot or (myRoot.Position - clientRoot.Position).Magnitude > READY_RADIUS + 3 then
 			Status.last = "Drifted, re-TP"
 			local reTeleported = teleportToClient(characterToKill)
-			if not reTeleported then warn(string.format("[%s] Pre-kill re-teleport failed.", player.Name)) return false end
+			if not reTeleported then teleportFailStreak += 1 warn(string.format("[%s] Pre-kill re-teleport failed.", player.Name)) return false end
 		end
 	end
 	-- teleportToClient already waited for replication + verified position.
@@ -1320,7 +1185,6 @@ local function performDrop(): boolean
 		task.wait(0.35)
 		task.wait(Settings.KillDelay)
 	end
-	if not droppingEnabled then return false end
 	if player.Character ~= characterToKill then warn(string.format("[%s] Character changed before kill.", player.Name)) return false end
 	Status.phase = "Killing"
 	local killed = selfKill(characterToKill) if not killed then return false end
@@ -1348,15 +1212,6 @@ if isHost then
 	if not okObs then warn("[Dropper] host observation failed: " .. tostring(errObs)) end
 	local okUI, errUI = pcall(createHostUI)
 	if not okUI then warn("[Dropper] host UI failed: " .. tostring(errUI)) end
-	-- Wire Pause/Resume now that both the button and toggle exist.
-	if pauseButton then
-		pcall(function()
-			(pauseButton :: TextButton).MouseButton1Click:Connect(function()
-				requestToggleDropping()
-			end)
-		end)
-		pcall(refreshPauseButton)
-	end
 	-- Paint rows immediately so the host never stares at "—".
 	local okPaint, errPaint = pcall(updateHostUI)
 	if not okPaint then warn("[Dropper] host UI first paint: " .. tostring(errPaint)) end
@@ -1365,7 +1220,7 @@ end
 -- Executor reload entry points. Host runs ONE line to bring the panel
 -- back without resetting counts or restarting drops:
 --   _G.Dropper.ReloadHostPanel()
--- Alt equivalent: _G.Dropper.ReloadAltUI(). Toggle: _G.Dropper.Toggle().
+-- Alt equivalent: _G.Dropper.ReloadAltUI().
 pcall(function()
 	local g = _G :: any
 	local api = g.Dropper
@@ -1377,14 +1232,6 @@ pcall(function()
 		if not isHost then warn("[Dropper] ReloadHostPanel is host-only.") return end
 		local ok, err = pcall(createHostUI)
 		if not ok then warn("[Dropper] host UI reload failed: " .. tostring(err)) return end
-		if pauseButton then
-			pcall(function()
-				(pauseButton :: TextButton).MouseButton1Click:Connect(function()
-					requestToggleDropping()
-				end)
-			end)
-		end
-		pcall(refreshPauseButton)
 		pcall(updateHostUI)
 		print("[Dropper] Host panel reloaded. Counts kept.")
 	end
@@ -1394,12 +1241,6 @@ pcall(function()
 		if not ok then warn("[Dropper] alt UI reload failed: " .. tostring(err)) return end
 		pcall(updateLocalUI)
 		print("[Dropper] Alt panel reloaded.")
-	end
-	api.Toggle = function()
-		requestToggleDropping()
-	end
-	api.IsPaused = function()
-		return not droppingEnabled
 	end
 end)
 
@@ -1477,14 +1318,21 @@ end
 -- Main loop (alts only)
 -- ============================================================
 Status.phase = "Starting"
-local initialCharacter = waitForCharacter()
-if not initialCharacter then
-	Status.phase = "Done"
-	Status.finished = true
-	Status.finishTime = os.clock()
-	Status.finishActive = activeElapsedSince(Status.startTime)
-	pcall(updateLocalUI)
-	return
+-- Never give up here: an alt whose character is slow to spawn must keep
+-- waiting, not silently "finish" with zero drops.
+local initialCharacter: Model? = nil
+while initialCharacter == nil do
+	local stillMine = true
+	pcall(function()
+		local g = _G :: any
+		stillMine = (g.DropperRunId :: any) == runId
+	end)
+	if not stillMine then return end
+	initialCharacter = waitForCharacter()
+	if initialCharacter == nil then
+		Status.last = "Waiting for spawn"
+		task.wait(1)
+	end
 end
 
 local deathsCompleted = 0
@@ -1498,10 +1346,6 @@ while deathsCompleted < deathsNeeded do
 	end)
 	if superseded then
 		print(string.format("[%s] New run started, stopping old loop.", player.Name))
-		break
-	end
-	-- Paused: hold here, keep deathsCompleted so resume continues same count.
-	if not waitWhilePaused() then
 		break
 	end
 	if Status.finished then
@@ -1532,8 +1376,16 @@ while deathsCompleted < deathsNeeded do
 		if Status.finished then
 			break
 		end
-		if not droppingEnabled then
-			task.wait(0.25)
+		-- Teleport stuck 3 drops in a row: force a fresh respawn to clear
+		-- bad physics (seated, welded, flung somewhere odd), then retry.
+		if teleportFailStreak >= 3 then
+			teleportFailStreak = 0
+			Status.phase = "Recovering"
+			Status.last = "Stuck, fresh respawn"
+			warn(string.format("[%s] Teleport stuck 3x, forcing fresh respawn.", player.Name))
+			local stuckCharacter = player.Character
+			if stuckCharacter then pcall(selfKill, stuckCharacter) end
+			if not waitForCharacter() then task.wait(1) end
 			continue
 		end
 		warn(string.format("[%s] Drop failed. Retrying same drop.", player.Name))
@@ -1543,7 +1395,7 @@ while deathsCompleted < deathsNeeded do
 
 	deathsCompleted += 1
 	Status.resetsDone = deathsCompleted
-	local elapsed = activeElapsedSince(runStartTime)
+	local elapsed = os.clock() - runStartTime
 	if elapsed < 0 then elapsed = 0 end
 	Status.averagePerDrop = elapsed / deathsCompleted
 
@@ -1564,8 +1416,8 @@ end
 Status.phase = "Done"
 Status.finished = true
 Status.finishTime = os.clock()
-Status.finishActive = activeElapsedSince(Status.startTime)
-local activeRun = activeElapsedSince(runStartTime)
+Status.finishActive = os.clock() - Status.startTime
+local activeRun = os.clock() - runStartTime
 if activeRun < 0 then activeRun = 0 end
 Status.averagePerDrop = if deathsCompleted > 0 then activeRun / deathsCompleted else Status.averagePerDrop
 pcall(updateLocalUI)
