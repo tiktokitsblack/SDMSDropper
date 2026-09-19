@@ -1,6 +1,29 @@
 --!strict
--- Dropper - reads Settings from loader getgenv (no hardcoded Settings here)
-local Settings = (getgenv and rawget(getgenv(), "Settings") or rawget(_G, "Settings")) or error("Settings not found - loader must set Settings before HttpGet")
+-- Dropper - reads Settings from Loader (_G.Settings). Waits so execution
+-- order between Loader/MyScript never kills the script (no UI / no TP).
+local Settings: any = rawget(_G, "Settings")
+if Settings == nil then
+	pcall(function()
+		local gg = (getgenv :: any)()
+		if gg then Settings = rawget(gg, "Settings") end
+	end)
+end
+if Settings == nil then
+	for _ = 1, 200 do
+		task.wait(0.1)
+		Settings = rawget(_G, "Settings")
+		if Settings ~= nil then break end
+		pcall(function()
+			local gg = (getgenv :: any)()
+			if gg then Settings = rawget(gg, "Settings") end
+		end)
+		if Settings ~= nil then break end
+	end
+end
+if Settings == nil then
+	warn("[Dropper] Settings not found - Loader must run before MyScript.")
+	return
+end
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
 local player = Players.LocalPlayer
@@ -21,15 +44,17 @@ local effectiveAccountCount = #Settings.AccountUserIds
 if Settings.AccountCount ~= effectiveAccountCount then
 	warn(string.format("AccountCount (%d) != AccountUserIds (%d). Using %d.", Settings.AccountCount, #Settings.AccountUserIds, effectiveAccountCount))
 end
+local HOST_USER_ID = Settings.HostUserId
+local isHost = HOST_USER_ID ~= nil and HOST_USER_ID == player.UserId
 local myAccountIndex: number? = nil
 for index, userId in ipairs(Settings.AccountUserIds) do if userId == player.UserId then myAccountIndex = index break end end
-if not myAccountIndex then warn(string.format("[%s] UserId %d is not configured.", player.Name, player.UserId)) return end
+local isAlt = myAccountIndex ~= nil
+-- Host is NOT in the drop rotation, but must still get the full panel.
+-- Only quit for accounts that are neither host nor alt.
+if not isAlt and not isHost then warn(string.format("[%s] UserId %d is not configured.", player.Name, player.UserId)) return end
 local deathsNeeded = math.ceil(Settings.TargetDrop / (DropPerDeath * effectiveAccountCount))
 local projectedTotal = deathsNeeded * effectiveAccountCount * DropPerDeath
 local totalDrops = deathsNeeded * effectiveAccountCount
-
-local HOST_USER_ID = Settings.HostUserId
-local isHost = HOST_USER_ID ~= nil and HOST_USER_ID == player.UserId
 
 -- ============================================================
 -- Helpers
@@ -109,12 +134,16 @@ local Status = {
 -- ============================================================
 local localSetters: {[string]: (string) -> ()}? = nil
 local function createLocalUI()
+	local playerGui = player:WaitForChild("PlayerGui", 30)
+	if not playerGui then warn("[Dropper] PlayerGui not found for alt UI.") return end
+	local old = playerGui:FindFirstChild("DropperLocal")
+	if old then old:Destroy() end
 	local ScreenGui = Instance.new("ScreenGui")
 	ScreenGui.Name = "DropperLocal"
 	ScreenGui.ResetOnSpawn = false
 	ScreenGui.IgnoreGuiInset = true
 	ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-	ScreenGui.Parent = player:WaitForChild("PlayerGui")
+	ScreenGui.Parent = playerGui
 
 	local frame = Instance.new("Frame")
 	frame.Name = "Panel"
@@ -140,7 +169,7 @@ local function createLocalUI()
 	title.Position = UDim2.new(0, 0, 0, 0)
 	title.BackgroundColor3 = Color3.fromRGB(35, 80, 150)
 	title.BorderSizePixel = 0
-	title.Text = "  DROPPER — " .. player.Name .. "  (#" .. tostring(myAccountIndex) .. ")"
+	title.Text = "  DROPPER — " .. player.Name .. "  (#" .. tostring(myAccountIndex or "?") .. ")"
 	title.TextColor3 = Color3.fromRGB(255, 255, 255)
 	title.TextXAlignment = Enum.TextXAlignment.Left
 	title.Font = Enum.Font.GothamBold
@@ -188,9 +217,11 @@ end
 -- Host admin panel (optional)
 -- ============================================================
 local hostCells: {[number]: {[string]: TextLabel}}? = nil
+local hostTimeLabels: {[string]: TextLabel}? = nil
 local hostStartTime = os.clock()
 local HostObs: {[number]: {deaths: number, alive: boolean, seen: boolean}} = {}
 
+local observedPlayers: {[Player]: boolean} = {}
 local function setupHostObservation()
 	for _, uid in ipairs(Settings.AccountUserIds) do
 		HostObs[uid] = { deaths = 0, alive = false, seen = false }
@@ -216,31 +247,42 @@ local function setupHostObservation()
 		end)
 	end
 
-	local function observe(userId: number)
-		local p = Players:GetPlayerByUserId(userId)
-		if not p then return end
-		if p.Character then hookCharacter(userId, p.Character) end
+	local function observe(p: Player)
+		if observedPlayers[p] then return end
+		observedPlayers[p] = true
+		local userId = p.UserId
+		if not HostObs[userId] then return end
+		if p.Character then task.spawn(hookCharacter, userId, p.Character) end
 		p.CharacterAdded:Connect(function(c) hookCharacter(userId, c) end)
 	end
 
-	for _, uid in ipairs(Settings.AccountUserIds) do observe(uid) end
-
+	for _, p in ipairs(Players:GetPlayers()) do
+		if HostObs[p.UserId] then observe(p) end
+	end
+	for _, uid in ipairs(Settings.AccountUserIds) do
+		local p = Players:GetPlayerByUserId(uid)
+		if p then observe(p) end
+	end
 	Players.PlayerAdded:Connect(function(p)
-		if HostObs[p.UserId] then observe(p.UserId) end
+		if HostObs[p.UserId] then observe(p) end
 	end)
 end
 
 local function createHostUI()
+	local playerGui = player:WaitForChild("PlayerGui", 30)
+	if not playerGui then warn("[Dropper] PlayerGui not found for host UI.") return end
+	local oldGui = playerGui:FindFirstChild("DropperHost")
+	if oldGui then oldGui:Destroy() end
 	local ScreenGui = Instance.new("ScreenGui")
 	ScreenGui.Name = "DropperHost"
 	ScreenGui.ResetOnSpawn = false
 	ScreenGui.IgnoreGuiInset = true
 	ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-	ScreenGui.Parent = player:WaitForChild("PlayerGui")
+	ScreenGui.Parent = playerGui
 
 	local frame = Instance.new("Frame")
 	frame.Name = "Panel"
-	frame.Size = UDim2.new(0, 620, 0, 240)
+	frame.Size = UDim2.new(0, 620, 0, 320)
 	frame.Position = UDim2.new(0.5, -310, 0, 20)
 	frame.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
 	frame.BorderSizePixel = 0
@@ -268,6 +310,57 @@ local function createHostUI()
 	title.TextSize = 13
 	title.Parent = frame
 
+	-- Tabs: Alts page + Time page (Time shows estimate + live remaining).
+	local tabBar = Instance.new("Frame")
+	tabBar.Size = UDim2.new(1, -20, 0, 26)
+	tabBar.Position = UDim2.new(0, 10, 0, 30)
+	tabBar.BackgroundTransparency = 1
+	tabBar.Parent = frame
+
+	local function makeTab(text: string, xPos: number): TextButton
+		local b = Instance.new("TextButton")
+		b.Size = UDim2.new(0, 90, 1, 0)
+		b.Position = UDim2.new(0, xPos, 0, 0)
+		b.BackgroundColor3 = Color3.fromRGB(30, 30, 42)
+		b.Text = text
+		b.TextColor3 = Color3.fromRGB(220, 220, 230)
+		b.Font = Enum.Font.GothamBold
+		b.TextSize = 13
+		b.BorderSizePixel = 0
+		b.Parent = tabBar
+		local c = Instance.new("UICorner")
+		c.CornerRadius = UDim.new(0, 4)
+		c.Parent = b
+		return b
+	end
+	local altsTab = makeTab("Alts", 0)
+	local timeTab = makeTab("Time", 96)
+
+	local altsPage = Instance.new("Frame")
+	altsPage.Name = "AltsPage"
+	altsPage.Size = UDim2.new(1, -20, 1, -72)
+	altsPage.Position = UDim2.new(0, 10, 0, 62)
+	altsPage.BackgroundTransparency = 1
+	altsPage.Parent = frame
+
+	local timePage = Instance.new("Frame")
+	timePage.Name = "TimePage"
+	timePage.Size = UDim2.new(1, -20, 1, -72)
+	timePage.Position = UDim2.new(0, 10, 0, 62)
+	timePage.BackgroundTransparency = 1
+	timePage.Visible = false
+	timePage.Parent = frame
+
+	local function selectTab(which: string)
+		local altsOn = which == "Alts"
+		altsPage.Visible = altsOn
+		timePage.Visible = not altsOn
+		altsTab.BackgroundColor3 = altsOn and Color3.fromRGB(150, 40, 40) or Color3.fromRGB(30, 30, 42)
+		timeTab.BackgroundColor3 = (not altsOn) and Color3.fromRGB(150, 40, 40) or Color3.fromRGB(30, 30, 42)
+	end
+	altsTab.MouseButton1Click:Connect(function() selectTab("Alts") end)
+	timeTab.MouseButton1Click:Connect(function() selectTab("Time") end)
+
 	local COLS = {
 		{key = "idx",    label = "#",       x = 0,   w = 34},
 		{key = "name",   label = "Account", x = 34,  w = 130},
@@ -278,11 +371,11 @@ local function createHostUI()
 	}
 
 	local header = Instance.new("Frame")
-	header.Size = UDim2.new(1, -20, 0, 22)
-	header.Position = UDim2.new(0, 10, 0, 34)
+	header.Size = UDim2.new(1, 0, 0, 22)
+	header.Position = UDim2.new(0, 0, 0, 0)
 	header.BackgroundColor3 = Color3.fromRGB(30, 30, 42)
 	header.BorderSizePixel = 0
-	header.Parent = frame
+	header.Parent = altsPage
 
 	local hCorner = Instance.new("UICorner")
 	hCorner.CornerRadius = UDim.new(0, 4)
@@ -302,10 +395,10 @@ local function createHostUI()
 	end
 
 	local rowsFrame = Instance.new("Frame")
-	rowsFrame.Size = UDim2.new(1, -20, 1, -64)
-	rowsFrame.Position = UDim2.new(0, 10, 0, 60)
+	rowsFrame.Size = UDim2.new(1, 0, 1, -26)
+	rowsFrame.Position = UDim2.new(0, 0, 0, 26)
 	rowsFrame.BackgroundTransparency = 1
-	rowsFrame.Parent = frame
+	rowsFrame.Parent = altsPage
 
 	local rowLayout = Instance.new("UIListLayout")
 	rowLayout.Padding = UDim.new(0, 2)
@@ -338,8 +431,42 @@ local function createHostUI()
 		end
 	end
 
+	-- Time page: estimated total on top, live remaining under it (real-time).
+	local timeLayout = Instance.new("UIListLayout")
+	timeLayout.Padding = UDim.new(0, 6)
+	timeLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	timeLayout.Parent = timePage
+	local timeLabels: {[string]: TextLabel} = {}
+	local function addTimeRow(key: string, prefix: string, order: number)
+		local row = Instance.new("TextLabel")
+		row.Size = UDim2.new(1, 0, 0, 24)
+		row.BackgroundColor3 = Color3.fromRGB(24, 24, 32)
+		row.BorderSizePixel = 0
+		row.Text = prefix .. ": —"
+		row.TextColor3 = Color3.fromRGB(220, 220, 230)
+		row.TextXAlignment = Enum.TextXAlignment.Left
+		row.Font = Enum.Font.Code
+		row.TextSize = 14
+		row.LayoutOrder = order
+		row.Parent = timePage
+		local pad = Instance.new("UIPadding")
+		pad.PaddingLeft = UDim.new(0, 10)
+		pad.Parent = row
+		local rc = Instance.new("UICorner")
+		rc.CornerRadius = UDim.new(0, 4)
+		rc.Parent = row
+		timeLabels[key] = row
+	end
+	addTimeRow("estTotal", "Estimated total", 1)
+	addTimeRow("elapsed", "Elapsed", 2)
+	addTimeRow("remaining", "Time left", 3)
+	addTimeRow("resets", "Resets (global)", 4)
+	addTimeRow("drop", "Cash dropped", 5)
+	addTimeRow("avg", "Avg / reset", 6)
+
 	makeDraggable(frame)
 	hostCells = cells
+	hostTimeLabels = timeLabels
 end
 
 -- ============================================================
@@ -370,18 +497,15 @@ end
 local function updateHostUI()
 	if not hostCells then return end
 	local elapsed = os.clock() - hostStartTime
+	local totalDeaths = 0
 
-	for _, uid in ipairs(Settings.AccountUserIds) do
+	for i, uid in ipairs(Settings.AccountUserIds) do
 		local cells = hostCells[uid]
 		if not cells then continue end
 		local obs = HostObs[uid]
 		local p = Players:GetPlayerByUserId(uid)
 
-		cells.idx.Text = tostring(({table.unpack(Settings.AccountUserIds)})[1] and 0 or 0) -- placeholder, set below
-		-- Find index
-		for i, v in ipairs(Settings.AccountUserIds) do
-			if v == uid then cells.idx.Text = tostring(i) break end
-		end
+		cells.idx.Text = tostring(i)
 
 		if not p then
 			cells.name.Text = "userid " .. tostring(uid)
@@ -392,7 +516,7 @@ local function updateHostUI()
 			cells.eta.Text = "—"
 		else
 			cells.name.Text = p.Name
-			if obs.alive then
+			if obs and obs.alive then
 				cells.status.Text = "Alive"
 				cells.status.TextColor3 = Color3.fromRGB(120, 220, 140)
 			else
@@ -400,16 +524,32 @@ local function updateHostUI()
 				cells.status.TextColor3 = Color3.fromRGB(230, 120, 120)
 			end
 
-		local d = obs.deaths
-		cells.resets.Text = string.format("%s / %s", comma(d), comma(deathsNeeded))
-		cells.drop.Text = string.format("%s / %s", comma(d * DropPerDeath), comma(deathsNeeded * DropPerDeath))
+			local d = (obs and obs.deaths) or 0
+			totalDeaths += d
+			cells.resets.Text = string.format("%s / %s", comma(d), comma(deathsNeeded))
+			cells.drop.Text = string.format("%s / %s", comma(d * DropPerDeath), comma(deathsNeeded * DropPerDeath))
 
 			-- ETA based on observed average
 			local avgPerDeath = (d > 0) and (elapsed / d) or estimatedPerDrop
-			local remaining = deathsNeeded - d
+			local remaining = math.max(0, deathsNeeded - d)
 			local eta = remaining * avgPerDeath
 			cells.eta.Text = formatTime(eta)
 		end
+	end
+
+	-- Time page: estimate on top, live remaining under it, every tick.
+	if hostTimeLabels then
+		local dropDone = totalDeaths * DropPerDeath
+		local resetsRemaining = math.max(0, totalDrops - totalDeaths)
+		local avgPerReset = (totalDeaths > 0) and (elapsed / totalDeaths) or estimatedPerDrop
+		local estTotal = estimatedPerDrop * totalDrops
+		local liveRemaining = resetsRemaining * avgPerReset
+		hostTimeLabels.estTotal.Text = "Estimated total: " .. formatTime(estTotal) .. string.format(" (%s resets)", comma(totalDrops))
+		hostTimeLabels.elapsed.Text = "Elapsed: " .. formatTime(elapsed)
+		hostTimeLabels.remaining.Text = "Time left: " .. formatTime(liveRemaining) .. string.format(" (%s left)", comma(resetsRemaining))
+		hostTimeLabels.resets.Text = string.format("Resets (global): %s / %s", comma(totalDeaths), comma(totalDrops))
+		hostTimeLabels.drop.Text = string.format("Cash dropped: %s / %s", comma(dropDone), comma(Settings.TargetDrop))
+		hostTimeLabels.avg.Text = "Avg / reset: " .. string.format("%.2fs", avgPerReset)
 	end
 end
 
@@ -420,7 +560,11 @@ print("========================================")
 print("       SEQUENTIAL AUTO DROP")
 print("========================================")
 print(string.format("Account: %s (UserId: %d)", player.Name, player.UserId))
-print(string.format("Account Order: %d / %d", myAccountIndex, effectiveAccountCount))
+if isAlt then
+	print(string.format("Account Order: %d / %d", myAccountIndex, effectiveAccountCount))
+else
+	print(string.format("Role: HOST (monitoring %d alts)", effectiveAccountCount))
+end
 print(string.format("Client UserId: %d", Settings.ClientUserId))
 print(string.format("Host UserId: %s", HOST_USER_ID and tostring(HOST_USER_ID) or "(none)"))
 print(string.format("Mode: %s", Settings.Mode))
@@ -660,6 +804,11 @@ local function isAccountReady(userId: number): boolean
 	return true
 end
 local function waitForPreviousAccount(): boolean
+	-- Blatant runs all alts in parallel for max speed. Waiting for the
+	-- previous alt would deadlock because the previous alt is dead
+	-- (mid-drop) most of the time. Safe keeps the sequential order.
+	if Settings.Mode == "Blatant" then return true end
+	if myAccountIndex == nil then return true end
 	if myAccountIndex == 1 then return true end
 	local previousIndex = (myAccountIndex :: number) - 1
 	local previousUserId = Settings.AccountUserIds[previousIndex]
@@ -733,10 +882,15 @@ end
 -- ============================================================
 -- Create UIs and start UI update loop
 -- ============================================================
-createLocalUI()
+-- Alt gets ONLY the small draggable status. Host gets ONLY the full panel.
+-- pcall so a UI error never kills TP/kill loop. Old copies removed first
+-- (respawn can otherwise stack duplicate panels).
+if isAlt then
+	pcall(createLocalUI)
+end
 if isHost then
-	setupHostObservation()
-	createHostUI()
+	pcall(setupHostObservation)
+	pcall(createHostUI)
 end
 
 task.spawn(function()
@@ -768,8 +922,15 @@ if isHost then
 	end)
 end
 
+-- Host does NOT drop. Panel + observation only, stop here.
+if isHost and not isAlt then
+	Status.phase = "Host monitoring"
+	print(string.format("[Dropper] Host %s monitoring %d alts. No dropping on host.", player.Name, effectiveAccountCount))
+	return
+end
+
 -- ============================================================
--- Main loop
+-- Main loop (alts only)
 -- ============================================================
 Status.phase = "Starting"
 local initialCharacter = waitForCharacter() if not initialCharacter then return end
