@@ -14,13 +14,19 @@ end
 player.Idled:Connect(function() VirtualUser:CaptureController() VirtualUser:ClickButton2(Vector2.zero) end)
 
 local DropPerDeath = 5_000
-if #Settings.AccountUserIds ~= Settings.AccountCount then warn(string.format("AccountCount (%d) != AccountUserIds (%d).", Settings.AccountCount, #Settings.AccountUserIds)) return end
+-- Use actual alt list size as source of truth so per-alt debug stays
+-- like before (e.g. ~280 resets for 10M split across alts).
+-- If Settings.AccountCount mismatches, auto-correct instead of dying.
+local effectiveAccountCount = #Settings.AccountUserIds
+if Settings.AccountCount ~= effectiveAccountCount then
+	warn(string.format("AccountCount (%d) != AccountUserIds (%d). Using %d.", Settings.AccountCount, #Settings.AccountUserIds, effectiveAccountCount))
+end
 local myAccountIndex: number? = nil
 for index, userId in ipairs(Settings.AccountUserIds) do if userId == player.UserId then myAccountIndex = index break end end
 if not myAccountIndex then warn(string.format("[%s] UserId %d is not configured.", player.Name, player.UserId)) return end
-local deathsNeeded = math.ceil(Settings.TargetDrop / (DropPerDeath * Settings.AccountCount))
-local projectedTotal = deathsNeeded * Settings.AccountCount * DropPerDeath
-local totalDrops = deathsNeeded * Settings.AccountCount
+local deathsNeeded = math.ceil(Settings.TargetDrop / (DropPerDeath * effectiveAccountCount))
+local projectedTotal = deathsNeeded * effectiveAccountCount * DropPerDeath
+local totalDrops = deathsNeeded * effectiveAccountCount
 
 local HOST_USER_ID = Settings.HostUserId
 local isHost = HOST_USER_ID ~= nil and HOST_USER_ID == player.UserId
@@ -350,7 +356,7 @@ local function updateLocalUI()
 
 	local dropOwn = s.resetsDone * DropPerDeath
 	local dropOwnTotal = s.resetsTotal * DropPerDeath
-	local dropGlobal = s.resetsDone * Settings.AccountCount * DropPerDeath
+	local dropGlobal = s.resetsDone * effectiveAccountCount * DropPerDeath
 	local dropGlobalTotal = Settings.TargetDrop
 
 	localSetters.phase(s.phase)
@@ -394,9 +400,9 @@ local function updateHostUI()
 				cells.status.TextColor3 = Color3.fromRGB(230, 120, 120)
 			end
 
-			local d = obs.deaths
-			cells.resets.Text = string.format("%s / %s", comma(d), comma(deathsNeeded))
-			cells.drop.Text = string.format("%s / %s", comma(d * Settings.AccountCount * DropPerDeath), comma(Settings.TargetDrop))
+		local d = obs.deaths
+		cells.resets.Text = string.format("%s / %s", comma(d), comma(deathsNeeded))
+		cells.drop.Text = string.format("%s / %s", comma(d * DropPerDeath), comma(deathsNeeded * DropPerDeath))
 
 			-- ETA based on observed average
 			local avgPerDeath = (d > 0) and (elapsed / d) or estimatedPerDrop
@@ -414,7 +420,7 @@ print("========================================")
 print("       SEQUENTIAL AUTO DROP")
 print("========================================")
 print(string.format("Account: %s (UserId: %d)", player.Name, player.UserId))
-print(string.format("Account Order: %d / %d", myAccountIndex, Settings.AccountCount))
+print(string.format("Account Order: %d / %d", myAccountIndex, effectiveAccountCount))
 print(string.format("Client UserId: %d", Settings.ClientUserId))
 print(string.format("Host UserId: %s", HOST_USER_ID and tostring(HOST_USER_ID) or "(none)"))
 print(string.format("Mode: %s", Settings.Mode))
@@ -741,6 +747,27 @@ task.spawn(function()
 	end
 end)
 
+-- Host true global progress (sums actual deaths across all alts).
+-- This is the only correct global number when alts desync.
+if isHost then
+	task.spawn(function()
+		while true do
+			task.wait(10)
+			local totalDeaths = 0
+			for _, uid in ipairs(Settings.AccountUserIds) do
+				local obs = HostObs[uid]
+				if obs then
+					totalDeaths += obs.deaths
+				end
+			end
+			local remaining = math.max(0, totalDrops - totalDeaths)
+			local dropDone = totalDeaths * DropPerDeath
+			local dropRemaining = math.max(0, Settings.TargetDrop - dropDone)
+			print(string.format("[HOST] Progress: %s/%s resets (global) | %s resets remaining | %s drop remaining", comma(totalDeaths), comma(totalDrops), comma(remaining), comma(dropRemaining)))
+		end
+	end)
+end
+
 -- ============================================================
 -- Main loop
 -- ============================================================
@@ -776,6 +803,13 @@ while deathsCompleted < deathsNeeded do
 	local elapsed = os.clock() - runStartTime
 	Status.averagePerDrop = elapsed / deathsCompleted
 
+	-- Old-style per-alt debug like before (e.g. 45/286 resets for 10M).
+	-- Own progress uses deathsNeeded (per-alt), global estimate uses totalDrops.
+	local personalDrop = deathsCompleted * DropPerDeath
+	local personalTotal = deathsNeeded * DropPerDeath
+	local globalEst = deathsCompleted * effectiveAccountCount * DropPerDeath
+	print(string.format("[%s] COMPLETE | %s/%s resets (own) | Personal: %s/%s | Global est: %s/%s", player.Name, comma(deathsCompleted), comma(deathsNeeded), comma(personalDrop), comma(personalTotal), comma(globalEst), comma(Settings.TargetDrop)))
+
 	Status.phase = "Complete"
 
 	if Settings.Mode ~= "Blatant" then
@@ -790,5 +824,5 @@ print("         AUTO DROP COMPLETE")
 print("========================================")
 print(string.format("Account: %s", player.Name))
 print(string.format("Deaths completed (this account): %s / %s", comma(deathsCompleted), comma(deathsNeeded)))
-print(string.format("Combined Drop: %s / %s", comma(deathsCompleted * Settings.AccountCount * DropPerDeath), comma(Settings.TargetDrop)))
+print(string.format("Combined Drop: %s / %s", comma(deathsCompleted * effectiveAccountCount * DropPerDeath), comma(Settings.TargetDrop)))
 print(string.format("Total time: %s", formatTime(finalElapsed)))
