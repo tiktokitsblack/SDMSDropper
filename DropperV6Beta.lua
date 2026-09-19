@@ -1,29 +1,7 @@
 --!strict
--- Dropper - reads Settings from Loader (_G.Settings). Waits so execution
--- order between Loader/MyScript never kills the script (no UI / no TP).
-local Settings: any = rawget(_G, "Settings")
-if Settings == nil then
-	pcall(function()
-		local gg = (getgenv :: any)()
-		if gg then Settings = rawget(gg, "Settings") end
-	end)
-end
-if Settings == nil then
-	for _ = 1, 200 do
-		task.wait(0.1)
-		Settings = rawget(_G, "Settings")
-		if Settings ~= nil then break end
-		pcall(function()
-			local gg = (getgenv :: any)()
-			if gg then Settings = rawget(gg, "Settings") end
-		end)
-		if Settings ~= nil then break end
-	end
-end
-if Settings == nil then
-	warn("[Dropper] Settings not found - Loader must run before MyScript.")
-	return
-end
+-- Dropper - reads Settings from Loader (_G.Settings). Execution order
+-- never kills the script: it waits for Settings instead of timing out,
+-- and no alt ever idles silently (a boot panel always states why).
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
 local player = Players.LocalPlayer
@@ -35,6 +13,87 @@ if getconnections then
 	end
 end
 player.Idled:Connect(function() VirtualUser:CaptureController() VirtualUser:ClickButton2(Vector2.zero) end)
+
+-- Always-visible boot panel so an idle alt states its reason on screen.
+local function showBootPanel(titleText: string, bodyText: string)
+	local guiParent: Instance? = nil
+	pcall(function()
+		guiParent = player:WaitForChild("PlayerGui", 30)
+	end)
+	if guiParent == nil then return end
+	pcall(function()
+		local old = (guiParent :: Instance):FindFirstChild("DropperBoot")
+		if old then old:Destroy() end
+	end)
+	local screenGui = Instance.new("ScreenGui")
+	screenGui.Name = "DropperBoot"
+	screenGui.ResetOnSpawn = false
+	screenGui.IgnoreGuiInset = true
+	screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	local frame = Instance.new("Frame")
+	frame.AnchorPoint = Vector2.new(0.5, 0.5)
+	frame.Position = UDim2.new(0.5, 0, 0.5, 0)
+	frame.Size = UDim2.new(0, 340, 0, 130)
+	frame.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
+	frame.BorderSizePixel = 0
+	frame.Active = true
+	local frameCorner = Instance.new("UICorner")
+	frameCorner.CornerRadius = UDim.new(0, 8)
+	frameCorner.Parent = frame
+	local title = Instance.new("TextLabel")
+	title.Size = UDim2.new(1, 0, 0, 26)
+	title.BackgroundColor3 = Color3.fromRGB(150, 40, 40)
+	title.BorderSizePixel = 0
+	title.Text = titleText
+	title.TextColor3 = Color3.fromRGB(255, 255, 255)
+	title.TextXAlignment = Enum.TextXAlignment.Left
+	title.Font = Enum.Font.GothamBold
+	title.TextSize = 13
+	title.Parent = frame
+	local body = Instance.new("TextLabel")
+	body.Size = UDim2.new(1, -20, 1, -36)
+	body.Position = UDim2.new(0, 10, 0, 32)
+	body.BackgroundTransparency = 1
+	body.Text = bodyText
+	body.TextColor3 = Color3.fromRGB(220, 220, 230)
+	body.TextXAlignment = Enum.TextXAlignment.Left
+	body.TextYAlignment = Enum.TextYAlignment.Top
+	body.TextWrapped = true
+	body.Font = Enum.Font.Code
+	body.TextSize = 13
+	body.Parent = frame
+	frame.Parent = screenGui
+	screenGui.Parent = guiParent
+end
+local function hideBootPanel()
+	pcall(function()
+		local guiParent = player:FindFirstChildOfClass("PlayerGui")
+		if guiParent then
+			local old = (guiParent :: Instance):FindFirstChild("DropperBoot")
+			if old then old:Destroy() end
+		end
+	end)
+end
+local function readSettings(): any
+	local found: any = rawget(_G, "Settings")
+	if found ~= nil then return found end
+	pcall(function()
+		local gg = (getgenv :: any)()
+		if gg then found = rawget(gg, "Settings") end
+	end)
+	return found
+end
+local Settings: any = readSettings()
+if Settings == nil then
+	warn("[Dropper] No Settings yet - waiting for Loader (never times out).")
+	showBootPanel("  DROPPER — WAITING", "Waiting for Settings.\nExecute Loader on this account.\nUserId: " .. tostring(player.UserId))
+	while Settings == nil do
+		task.wait(0.5)
+		Settings = readSettings()
+	end
+	hideBootPanel()
+	print("[Dropper] Settings received, booting.")
+end
 
 local DropPerDeath = 5_000
 -- Use actual alt list size as source of truth so per-alt debug stays
@@ -51,7 +110,11 @@ for index, userId in ipairs(Settings.AccountUserIds) do if userId == player.User
 local isAlt = myAccountIndex ~= nil
 -- Host is NOT in the drop rotation, but must still get the full panel.
 -- Only quit for accounts that are neither host nor alt.
-if not isAlt and not isHost then warn(string.format("[%s] UserId %d is not configured.", player.Name, player.UserId)) return end
+if not isAlt and not isHost then
+	warn(string.format("[%s] UserId %d is not configured in Loader AccountUserIds.", player.Name, player.UserId))
+	showBootPanel("  DROPPER — NOT IN LIST", player.Name .. " (UserId " .. tostring(player.UserId) .. ") is not in Loader AccountUserIds and is not the Host. Add this UserId to Loader, then rejoin.")
+	return
+end
 local deathsNeeded = math.ceil(Settings.TargetDrop / (DropPerDeath * effectiveAccountCount))
 local projectedTotal = deathsNeeded * effectiveAccountCount * DropPerDeath
 local totalDrops = deathsNeeded * effectiveAccountCount
@@ -188,6 +251,7 @@ local estimatedPerDrop = TELEPORT_SETTLE + POST_TELEPORT + KILL_DELAY + KILL_ROU
 -- ============================================================
 local Status = {
 	phase = "Starting",
+	last = "",
 	resetsDone = 0,
 	resetsTotal = deathsNeeded,
 	startTime = os.clock(),
@@ -215,7 +279,7 @@ local function createLocalUI()
 
 	local frame = Instance.new("Frame")
 	frame.Name = "Panel"
-	frame.Size = UDim2.new(0, 300, 0, 210)
+	frame.Size = UDim2.new(0, 300, 0, 236)
 	frame.AnchorPoint = Vector2.new(0.5, 0.5)
 	frame.Position = UDim2.new(0.5, 0, 0.5, 0)
 	frame.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
@@ -277,6 +341,7 @@ local function createLocalUI()
 	addRow("dropGlobal", "Drop (total)", 4)
 	addRow("elapsed", "Elapsed", 5)
 	addRow("eta", "ETA", 6)
+	addRow("last", "Last", 7)
 
 	makeDraggable(frame)
 	localSetters = setters
@@ -635,6 +700,7 @@ local function updateLocalUI()
 	else
 		localSetters.eta(formatTime(eta))
 	end
+	localSetters.last(s.last)
 end
 
 local function updateHostUI()
@@ -1072,12 +1138,21 @@ local function teleportToClient(character: Model): boolean
 	if not clientRoot then warn(string.format("[%s] Client has no HumanoidRootPart.", player.Name)) return false end
 	local root = getRoot(character)
 	if not root then return false end
+	-- Each alt lands on its own ring slot around the client. Stacking all
+	-- alts on one CFrame flings them apart, so some never verify.
+	local function slotCFrame(base: CFrame): CFrame
+		if myAccountIndex ~= nil and effectiveAccountCount > 1 then
+			local angle = (((myAccountIndex :: number) - 1) / effectiveAccountCount) * math.pi * 2
+			return base + Vector3.new(math.cos(angle) * 4, 0, math.sin(angle) * 4)
+		end
+		return base
+	end
 	-- Kill leftover momentum so physics does not fling us back.
 	pcall(function()
 		root.AssemblyLinearVelocity = Vector3.zero
 		root.AssemblyAngularVelocity = Vector3.zero
 	end)
-	character:PivotTo(clientRoot.CFrame)
+	character:PivotTo(slotCFrame(clientRoot.CFrame))
 	-- Let the teleport REPLICATE before killing. Killing on the same
 	-- frame makes the server register the death at the OLD position,
 	-- so the cash drops at spawn instead of at the client.
@@ -1094,15 +1169,18 @@ local function teleportToClient(character: Model): boolean
 		local nowRoot = getRoot(character)
 		local freshClient = getClientRoot()
 		if not nowRoot or not freshClient then
+			Status.last = "TP lost char"
 			warn(string.format("[%s] Teleport lost character.", player.Name))
 			return false
 		end
-		local distance = (nowRoot.Position - freshClient.Position).Magnitude
+		local want = slotCFrame(freshClient.CFrame)
+		local distance = (nowRoot.Position - want.Position).Magnitude
 		if distance <= limit then
+			Status.last = string.format("TP ok (%.1f)", distance)
 			print(string.format("[%s] TP to client confirmed (dist %.1f).", player.Name, distance))
 			return true
 		end
-		character:PivotTo(freshClient.CFrame)
+		character:PivotTo(want)
 		pcall(function()
 			nowRoot.AssemblyLinearVelocity = Vector3.zero
 			nowRoot.AssemblyAngularVelocity = Vector3.zero
@@ -1111,8 +1189,9 @@ local function teleportToClient(character: Model): boolean
 	end
 	local lastRoot = getRoot(character)
 	local lastClient = getClientRoot()
-	local lastDist = (lastRoot and lastClient) and (lastRoot.Position - lastClient.Position).Magnitude or -1
-	warn(string.format("[%s] Teleport verification failed. Distance: %.2f", player.Name, lastDist))
+	local lastDist = (lastRoot and lastClient) and (lastRoot.Position - slotCFrame(lastClient.CFrame).Position).Magnitude or -1
+	Status.last = string.format("TP fail (%.1f)", lastDist)
+	warn(string.format("[%s] Teleport verification failed. Distance: %.2f Alt: %s Client: %s", player.Name, lastDist, tostring(lastRoot and lastRoot.Position), tostring(lastClient and lastClient.Position)))
 	return false
 end
 local function selfKill(character: Model): boolean
@@ -1124,12 +1203,20 @@ local function selfKill(character: Model): boolean
 	end
 	humanoid.Health = 0 return true
 end
+local lastNoClientWarnAt: number = 0
 local function performDrop(): boolean
 	Status.phase = "Waiting for character"
 	if not waitWhilePaused() then return false end
 	local character = waitForCharacter() if not character then return false end
 	local characterToKill = character
-	if not getClient() then return false end
+	if not getClient() then
+		Status.last = "No client"
+		if os.clock() - lastNoClientWarnAt > 5 then
+			lastNoClientWarnAt = os.clock()
+			warn(string.format("[%s] Client UserId %s not in server, waiting...", player.Name, tostring(Settings.ClientUserId)))
+		end
+		return false
+	end
 	Status.phase = "Teleporting"
 	local teleported = teleportToClient(characterToKill) if not teleported then warn(string.format("[%s] Teleport failed.", player.Name)) return false end
 	-- Paused after TP: hold at client, do NOT kill. On resume re-confirm
