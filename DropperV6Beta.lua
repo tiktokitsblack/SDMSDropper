@@ -1000,21 +1000,8 @@ local function teleportToClient(character: Model): boolean
 	if not clientRoot then warn(string.format("[%s] Client has no HumanoidRootPart.", player.Name)) return false end
 	local root = getRoot(character)
 	if not root then return false end
-	-- Each alt lands on its own ring slot around the client. Stacking all
-	-- alts on one CFrame flings them apart, so some never verify.
-	local function slotCFrame(base: CFrame): CFrame
-		if myAccountIndex ~= nil and effectiveAccountCount > 1 then
-			local angle = (((myAccountIndex :: number) - 1) / effectiveAccountCount) * math.pi * 2
-			return base + Vector3.new(math.cos(angle) * 5, 0, math.sin(angle) * 5)
-		end
-		return base
-	end
-	-- Kill leftover momentum so physics does not fling us back.
-	pcall(function()
-		root.AssemblyLinearVelocity = Vector3.zero
-		root.AssemblyAngularVelocity = Vector3.zero
-	end)
-	character:PivotTo(slotCFrame(clientRoot.CFrame))
+	-- All alts stack on the client's EXACT position, then self-kill there.
+	character:PivotTo(clientRoot.CFrame)
 	-- Let the teleport REPLICATE before killing. Killing on the same
 	-- frame makes the server register the death at the OLD position,
 	-- so the cash drops at spawn instead of at the client.
@@ -1027,7 +1014,7 @@ local function teleportToClient(character: Model): boolean
 	-- A failed teleport returns false so this drop is retried WITHOUT
 	-- counting a reset (no wasted/misplaced drop).
 	local limit = Settings.Mode == "Blatant" and 12 or 10
-	for _ = 1, 3 do
+	for _ = 1, 4 do
 		local nowRoot = getRoot(character)
 		local freshClient = getClientRoot()
 		if not nowRoot or not freshClient then
@@ -1035,7 +1022,7 @@ local function teleportToClient(character: Model): boolean
 			warn(string.format("[%s] Teleport lost character.", player.Name))
 			return false
 		end
-		local want = slotCFrame(freshClient.CFrame)
+		local want = freshClient.CFrame
 		local distance = (nowRoot.Position - want.Position).Magnitude
 		if distance <= limit then
 			Status.last = string.format("TP ok (%.1f)", distance)
@@ -1051,7 +1038,7 @@ local function teleportToClient(character: Model): boolean
 	end
 	local lastRoot = getRoot(character)
 	local lastClient = getClientRoot()
-	local lastDist = (lastRoot and lastClient) and (lastRoot.Position - slotCFrame(lastClient.CFrame).Position).Magnitude or -1
+	local lastDist = (lastRoot and lastClient) and (lastRoot.Position - lastClient.Position).Magnitude or -1
 	Status.last = string.format("TP fail (%.1f)", lastDist)
 	warn(string.format("[%s] Teleport verification failed. Distance: %.2f Alt: %s Client: %s", player.Name, lastDist, tostring(lastRoot and lastRoot.Position), tostring(lastClient and lastClient.Position)))
 	return false
