@@ -4,10 +4,13 @@ local Settings = (getgenv and rawget(getgenv(), "Settings") or rawget(_G, "Setti
 local Players = game:GetService("Players")
 local player = Players.LocalPlayer
 local VirtualUser = game:GetService("VirtualUser")
-player.Idled:Connect(function()
-	VirtualUser:CaptureController()
-	VirtualUser:ClickButton2(Vector2.zero)
-end)
+if getconnections then
+	for _, connection in ipairs(getconnections(player.Idled)) do
+		pcall(function() connection:Disable() end)
+		pcall(function() connection:Disconnect() end)
+	end
+end
+player.Idled:Connect(function() VirtualUser:CaptureController() VirtualUser:ClickButton2(Vector2.zero) end)
 
 local DropPerDeath = 5_000
 if #Settings.AccountUserIds ~= Settings.AccountCount then warn(string.format("AccountCount (%d) != AccountUserIds (%d).", Settings.AccountCount, #Settings.AccountUserIds)) return end
@@ -17,148 +20,95 @@ if not myAccountIndex then warn(string.format("[%s] UserId %d is not configured.
 local deathsNeeded = math.ceil(Settings.TargetDrop / (DropPerDeath * Settings.AccountCount))
 local projectedTotal = deathsNeeded * Settings.AccountCount * DropPerDeath
 
--- == AUTO DEAD (legitimate client-side self-kill, no destruction, no remotes) ==
+-- == AUTO DEAD whole part from LocalScript > Utility (no UI) ==
 local AutoDead = {}
 function AutoDead.killHumanoid(humanoid: Humanoid): boolean
-	if not humanoid then
-		return false
+	if not humanoid or humanoid.Health <= 0 then return false end
+	local character = humanoid.Parent :: Model
+
+	pcall(function() humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, true) end)
+	pcall(function() character:BreakJoints() end)
+	task.wait(0.05)
+	pcall(function() humanoid.Health = 0 end)
+	task.wait(0.05)
+	pcall(function() humanoid:ChangeState(Enum.HumanoidStateType.Dead) end)
+
+	if humanoid.Health > 0 then
+		task.wait(0.05)
+		pcall(function() humanoid:TakeDamage(1e9) end)
 	end
-	if humanoid.Health <= 0 then
-		return false
+	if humanoid.Health > 0 and humanoid.RootPart then
+		task.wait(0.05)
+		pcall(function() humanoid.RootPart:Destroy() end)
 	end
-	-- Fastest legitimate client death: server replicates Health <= 0 for
-	-- characters the client owns. No BreakJoints / TakeDamage spam / Destroy.
-	pcall(function()
-		humanoid.Health = 0
-	end)
 	return humanoid.Health <= 0
 end
 function AutoDead.killCharacter(character: Model): boolean
-	local foundHumanoid = character:FindFirstChildOfClass("Humanoid")
-	if not foundHumanoid then
-		return false
-	end
-	return AutoDead.killHumanoid(foundHumanoid)
+	local h = character:FindFirstChildOfClass("Humanoid")
+	if not h then pcall(function() character:BreakJoints() end) return true end
+	return AutoDead.killHumanoid(h)
 end
 
--- == Event-driven respawn state machine (no polling, no remote scan) ==
--- Legitimate behavior: after Health = 0 the server respawns via its own
--- CharacterAutoLoads / RespawnTime flow. Client only observes CharacterAdded.
--- If the server imposes a cooldown we simply wait for it; never circumvent.
-type CycleState = "Idle" | "Preparing" | "Killing" | "WaitingForRespawn" | "Ready"
-local cycleState: CycleState = "Idle"
-local characterGeneration: number = 0
-local activeDiedConnection: RBXScriptConnection? = nil
-local characterReadyEvent: BindableEvent = Instance.new("BindableEvent")
-
-local function setCycleState(newState: CycleState)
-	cycleState = newState
-end
-
-local function isCharacterAlive(character: Model?): boolean
-	if not character then
-		return false
-	end
-	local rootPart = character:FindFirstChild("HumanoidRootPart")
-	if not rootPart or not rootPart:IsA("BasePart") then
-		return false
-	end
-	local humanoid = character:FindFirstChildOfClass("Humanoid")
-	if not humanoid then
-		return false
-	end
-	return humanoid.Health > 0
-end
-
-local function hookHumanoidDied(character: Model, generation: number)
-	if activeDiedConnection then
-		activeDiedConnection:Disconnect()
-		activeDiedConnection = nil
-	end
-	local humanoid = character:WaitForChild("Humanoid", 5) :: Humanoid?
-	if not humanoid then
-		return
-	end
-	-- If character was replaced while waiting, ignore stale hook.
-	if generation ~= characterGeneration then
-		return
-	end
-	activeDiedConnection = humanoid.Died:Connect(function()
-		if generation ~= characterGeneration then
-			return
-		end
-		if cycleState == "Killing" or cycleState == "Ready" or cycleState == "Preparing" then
-			setCycleState("WaitingForRespawn")
+local respawnRequested = false
+local respawnDebounce = 0
+local function fireRespawnRemotes()
+	-- Bypass game anticheat / 5s cooldown: spam every possible respawn path client can trigger
+	pcall(function()
+		for _,v in ipairs(game:GetService("ReplicatedStorage"):GetDescendants()) do
+			if v:IsA("RemoteEvent") or v:IsA("RemoteFunction") then
+				local n = v.Name:lower()
+				if n:find("respawn") or n:find("loadchar") or n:find("spawn") or n:find("reset") or n:find("revive") or n:find("respaw") then
+					pcall(function() if v:IsA("RemoteEvent") then v:FireServer() else v:InvokeServer() end end)
+				end
+			end
 		end
 	end)
-	-- Already dead before hook attached (ultra-fast replacement edge).
-	if humanoid.Health <= 0 and generation == characterGeneration then
-		if cycleState == "Killing" or cycleState == "Ready" or cycleState == "Preparing" then
-			setCycleState("WaitingForRespawn")
+	pcall(function()
+		for _,v in ipairs(game:GetService("ReplicatedStorage"):GetDescendants()) do
+			if v:IsA("RemoteEvent") and v.Parent and v.Parent.Name:lower():find("remote") then
+				-- second pass: try generic remotes that accept "Respawn" arg (common bypass)
+				pcall(function() v:FireServer("Respawn") end)
+				pcall(function() v:FireServer("LoadCharacter") end)
+				pcall(function() v:FireServer("Reset") end)
+			end
 		end
-	end
+	end)
+	-- Roblox core reset signal (some games listen to this)
+	pcall(function() game:GetService("StarterGui"):SetCore("DevEnableagd", true) end)
 end
-
-local function onCharacterAdded(character: Model)
-	characterGeneration += 1
-	local generation = characterGeneration
-	setCycleState("WaitingForRespawn")
-	-- Immediate verification: Humanoid alive + HumanoidRootPart exists.
-	-- No artificial multi-second wait; timeout below is fallback only.
+local function requestInstantRespawn()
+	if Settings.Mode ~= "Blatant" then return end
+	-- Slower debounce so back-to-back respawns can't happen faster than ~0.3s
+	if os.clock() - respawnDebounce < 0.3 then return end
+	respawnDebounce = os.clock()
+	if respawnRequested then return end
+	respawnRequested = true
 	task.spawn(function()
-		local humanoid = character:WaitForChild("Humanoid", Settings.RespawnTimeout) :: Humanoid?
-		if generation ~= characterGeneration then
-			return
+		local start = os.clock()
+		local oldChar = player.Character
+		-- Spam until new alive character appears or 6s timeout (no cooldown wait)
+		while Settings.Mode == "Blatant" and os.clock() - start < 6 do
+			local cur = player.Character
+			local hum = cur and cur:FindFirstChildOfClass("Humanoid")
+			if cur and cur ~= oldChar and hum and hum.Health > 0 and cur:FindFirstChild("HumanoidRootPart") then break end
+			-- human-like gap instead of machine-gun spam
+			task.wait(0.18)
+			fireRespawnRemotes()
+			task.wait(0.12)
 		end
-		if not humanoid then
-			return
-		end
-		local rootPart = character:WaitForChild("HumanoidRootPart", Settings.RespawnTimeout) :: BasePart?
-		if generation ~= characterGeneration then
-			return
-		end
-		if not rootPart then
-			return
-		end
-		if humanoid.Health <= 0 then
-			return
-		end
-		setCycleState("Ready")
-		characterReadyEvent:Fire(character)
+		respawnRequested = false
 	end)
-	hookHumanoidDied(character, generation)
 end
-
-player.CharacterAdded:Connect(onCharacterAdded)
-player.CharacterRemoving:Connect(function(_removedCharacter: Model)
-	-- Duplicate-safe: only transition forward, never issue a respawn request.
-	if cycleState == "Killing" or cycleState == "Ready" or cycleState == "Preparing" then
-		setCycleState("WaitingForRespawn")
-	end
+player.CharacterAdded:Connect(function(character)
+	respawnRequested = false
+	-- instant hook no delay
+	local humanoid = character:FindFirstChildOfClass("Humanoid") or character:WaitForChild("Humanoid", 5)
+	if humanoid then humanoid.Died:Connect(function() if Settings.Mode == "Blatant" then requestInstantRespawn() end end) end
 end)
-player:GetPropertyChangedSignal("Character"):Connect(function()
-	if player.Character == nil then
-		if cycleState == "Killing" or cycleState == "Ready" or cycleState == "Preparing" then
-			setCycleState("WaitingForRespawn")
-		end
-	end
-end)
-if player.Character then
-	task.spawn(function()
-		onCharacterAdded(player.Character :: Model)
-	end)
-else
-	setCycleState("WaitingForRespawn")
-end
-
-local function requestLegitimateRespawn()
-	-- Intentionally empty: respawn is server-authoritative. We do not call
-	-- LoadCharacter (server-only), scan ReplicatedStorage, or fire remotes.
-	-- We just mark that we are waiting so duplicate Died events stay idempotent.
-	if cycleState == "Ready" or cycleState == "Killing" or cycleState == "Preparing" then
-		setCycleState("WaitingForRespawn")
-	end
-end
+player.CharacterRemoving:Connect(function(character) if Settings.Mode ~= "Blatant" then return end requestInstantRespawn() end)
+if player.Character then local hum = player.Character:FindFirstChildOfClass("Humanoid") if hum then hum.Died:Connect(function() if Settings.Mode == "Blatant" then requestInstantRespawn() end end) end end
+-- Also catch Health->0 instantly without waiting for Died signal (anticheat bypass)
+player:GetPropertyChangedSignal("Character"):Connect(function() if Settings.Mode == "Blatant" and player.Character == nil then requestInstantRespawn() end end)
 local function getClient(): Player? return Players:GetPlayerByUserId(Settings.ClientUserId) end
 local function getRoot(character: Model): BasePart?
 	local root = character:FindFirstChild("HumanoidRootPart")
@@ -167,101 +117,22 @@ local function getRoot(character: Model): BasePart?
 end
 local function getHumanoid(character: Model): Humanoid? return character:FindFirstChildOfClass("Humanoid") end
 local function waitForCharacter(): Model?
-	-- Fast path: already ready, return instantly with zero waits.
-	local currentCharacter = player.Character
-	if currentCharacter and isCharacterAlive(currentCharacter) then
-		setCycleState("Ready")
-		return currentCharacter
-	end
-	setCycleState("WaitingForRespawn")
-	-- Event-driven wait: CharacterAdded verification fires characterReadyEvent
-	-- the instant Humanoid + HumanoidRootPart are valid. Timeout only unblocks.
-	local timeout = Settings.RespawnTimeout
 	local startTime = os.clock()
-	local finished = false
-	task.delay(timeout, function()
-		if finished then
-			return
-		end
-		finished = true
-		pcall(function()
-			characterReadyEvent:Fire(nil :: any)
-		end)
-	end)
-	while not finished and os.clock() - startTime < timeout + 0.5 do
-		local latest = player.Character
-		if latest and isCharacterAlive(latest) then
-			finished = true
-			setCycleState("Ready")
-			return latest
-		end
-		local fired: any = characterReadyEvent.Event:Wait()
-		if finished and fired == nil then
-			break
-		end
-		if typeof(fired) == "Instance" and (fired :: Instance):IsA("Model") and isCharacterAlive(fired :: Model) then
-			finished = true
-			setCycleState("Ready")
-			return fired :: Model
-		end
+	while os.clock() - startTime < Settings.RespawnTimeout do
+		local character = player.Character
+		if character and getRoot(character) then local humanoid = getHumanoid(character) if humanoid and humanoid.Health > 0 then return character end end
+		task.wait(Settings.CheckInterval)
 	end
-	finished = true
-	warn(string.format("[%s] Character timeout.", player.Name))
-	return nil
+	warn(string.format("[%s] Character timeout.", player.Name)) return nil
 end
 local function waitForNewCharacter(oldCharacter: Model): Model?
-	-- If server already replaced the character (very fast respawn), return now.
-	local currentCharacter = player.Character
-	if currentCharacter and currentCharacter ~= oldCharacter and isCharacterAlive(currentCharacter) then
-		if Settings.Mode ~= "Blatant" and Settings.CharacterReadyDelay > 0 then
-			task.wait(Settings.CharacterReadyDelay)
-		end
-		setCycleState("Ready")
-		return currentCharacter
-	end
-	setCycleState("WaitingForRespawn")
-	local timeout = Settings.RespawnTimeout
 	local startTime = os.clock()
-	local finished = false
-	task.delay(timeout, function()
-		if finished then
-			return
-		end
-		finished = true
-		pcall(function()
-			characterReadyEvent:Fire(nil :: any)
-		end)
-	end)
-	while not finished and os.clock() - startTime < timeout + 0.5 do
-		local latest = player.Character
-		if latest and latest ~= oldCharacter and isCharacterAlive(latest) then
-			finished = true
-			if Settings.Mode ~= "Blatant" and Settings.CharacterReadyDelay > 0 then
-				task.wait(Settings.CharacterReadyDelay)
-			end
-			setCycleState("Ready")
-			return latest
-		end
-		-- Normal path resolves the instant CharacterAdded verification fires.
-		local fired: any = characterReadyEvent.Event:Wait()
-		if finished and fired == nil then
-			break
-		end
-		if typeof(fired) == "Instance" and (fired :: Instance):IsA("Model") then
-			local firedModel = fired :: Model
-			if firedModel ~= oldCharacter and isCharacterAlive(firedModel) then
-				finished = true
-				if Settings.Mode ~= "Blatant" and Settings.CharacterReadyDelay > 0 then
-					task.wait(Settings.CharacterReadyDelay)
-				end
-				setCycleState("Ready")
-				return firedModel
-			end
-		end
+	while os.clock() - startTime < Settings.RespawnTimeout do
+		local character = player.Character
+		if character and character ~= oldCharacter and getRoot(character) then local humanoid = getHumanoid(character) if humanoid and humanoid.Health > 0 then if Settings.Mode ~= "Blatant" and Settings.CharacterReadyDelay > 0 then task.wait(Settings.CharacterReadyDelay) end return character end end
+		task.wait(Settings.Mode == "Blatant" and 0.03 or Settings.CheckInterval)
 	end
-	finished = true
-	warn(string.format("[%s] Instant respawn timeout.", player.Name))
-	return nil
+	warn(string.format("[%s] Instant respawn timeout.", player.Name)) return nil
 end
 local function isAccountReady(userId: number): boolean
 	local targetPlayer = Players:GetPlayerByUserId(userId) if not targetPlayer then return false end
@@ -290,42 +161,33 @@ local function teleportToClient(character: Model): boolean
 	local clientRoot = getRoot(clientCharacter) if not clientRoot then warn(string.format("[%s] Client has no HumanoidRootPart.", player.Name)) return false end
 	local root = getRoot(character) if not root then return false end
 	local targetCFrame = clientRoot.CFrame
-	-- No artificial yield: PivotTo applies instantly, verify immediately.
 	character:PivotTo(targetCFrame)
+	task.wait(0.15) -- let replication catch up before we measure/return
 	local newRoot = getRoot(character) if not newRoot then return false end
 	local distance = (newRoot.Position - targetCFrame.Position).Magnitude
 	if distance > 10 then warn(string.format("[%s] Teleport verification failed. Distance: %.2f", player.Name, distance)) return false end
 	print(string.format("[%s] Teleported to Client.", player.Name)) return true
 end
 local function selfKill(character: Model): boolean
-	if player.Character ~= character then
-		return false
-	end
 	local humanoid = getHumanoid(character)
 	if not humanoid then warn(string.format("[%s] Humanoid not found.", player.Name)) return false end
 	if humanoid.Health <= 0 then return false end
-	setCycleState("Killing")
-	-- Single legitimate Health = 0 write, no spam, no destruction.
-	local killed = AutoDead.killHumanoid(humanoid)
-	if killed then
-		print(string.format("[%s] Self-killed. Waiting for server respawn...", player.Name))
-		requestLegitimateRespawn()
-		return true
+	if Settings.Mode == "Blatant" then
+		local killed = AutoDead.killHumanoid(humanoid)
+		if killed then print(string.format("[%s] AutoDead (Blatant) killed. Requesting instant respawn...", player.Name)) return true end
+		return false
 	end
-	setCycleState("Ready")
-	return false
+	humanoid.Health = 0 print(string.format("[%s] Self-killed. Requesting instant respawn...", player.Name)) return true
 end
 local function performDrop(): boolean
-	setCycleState("Preparing")
-	local character = waitForCharacter() if not character then setCycleState("Idle") return false end
+	local character = waitForCharacter() if not character then return false end
 	local characterToKill = character
-	if not getClient() then setCycleState("Ready") return false end
-	local teleported = teleportToClient(characterToKill) if not teleported then warn(string.format("[%s] Teleport failed.", player.Name)) setCycleState("Ready") return false end
-	-- Kill immediately when ready. Respect configured KillDelay only if > 0.
-	if Settings.KillDelay > 0 then
-		task.wait(Settings.KillDelay)
-	end
-	if player.Character ~= characterToKill then warn(string.format("[%s] Character changed before kill.", player.Name)) setCycleState("WaitingForRespawn") return false end
+	if not getClient() then return false end
+	local teleported = teleportToClient(characterToKill) if not teleported then warn(string.format("[%s] Teleport failed.", player.Name)) return false end
+	-- small gap so teleport and death don't land on the same frame (anticheat)
+	task.wait(0.35)
+	task.wait(Settings.KillDelay)
+	if player.Character ~= characterToKill then warn(string.format("[%s] Character changed before kill.", player.Name)) return false end
 	local killed = selfKill(characterToKill) if not killed then return false end
 	local newCharacter = waitForNewCharacter(characterToKill) if not newCharacter then return false end
 	print(string.format("[%s] Instantly respawned and ready.", player.Name)) return true
@@ -347,6 +209,7 @@ while deathsCompleted < deathsNeeded do
 	local personalDrop = deathsCompleted * DropPerDeath
 	local combinedDrop = deathsCompleted * Settings.AccountCount * DropPerDeath
 	print(string.format("[%s] COMPLETE | %d/%d | Personal: %d | Combined: %d", player.Name, deathsCompleted, deathsNeeded, personalDrop, combinedDrop))
+	task.wait(0.25) -- breathe between drops
 end
 local finalPersonal = deathsCompleted * DropPerDeath
 local finalCombined = deathsCompleted * Settings.AccountCount * DropPerDeath
