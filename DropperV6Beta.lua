@@ -1204,7 +1204,79 @@ local function selfKill(character: Model): boolean
 	humanoid.Health = 0 return true
 end
 local lastNoClientWarnAt: number = 0
+-- Wave sync (client-only, executor-safe). Each alt owns exactly one flag:
+-- DropperReady_<UserId>. Names are unique per alt so concurrent check-ins
+-- can never duplicate or race, and no server script is needed.
+local myReadyFlag: BoolValue? = nil
+local function readyKey(accountUserId: number): string
+	return "DropperReady_" .. tostring(accountUserId)
+end
+local function setSyncReady(ready: boolean)
+	if not isAlt then return end
+	if not myReadyFlag then
+		local existing = ReplicatedStorage:FindFirstChild(readyKey(player.UserId))
+		if existing and existing:IsA("BoolValue") then
+			myReadyFlag = existing :: BoolValue
+		else
+			local created = Instance.new("BoolValue")
+			created.Name = readyKey(player.UserId)
+			created.Value = ready
+			created.Parent = ReplicatedStorage
+			myReadyFlag = created
+		end
+	end
+	local flag = myReadyFlag
+	if flag then
+		pcall(function()
+			flag.Value = ready
+		end)
+	end
+end
+local function presentAltUserIds(): {number}
+	local present: {number} = {}
+	for _, accountUserId in ipairs(Settings.AccountUserIds) do
+		if Players:GetPlayerByUserId(accountUserId) then
+			table.insert(present, accountUserId)
+		end
+	end
+	return present
+end
+local function waitForAllReady(): boolean
+	if not isAlt then return true end
+	Status.phase = "Syncing"
+	Status.last = "Waiting for alts"
+	local timeout = 15
+	if Settings.Mode ~= "Blatant" then
+		timeout = 20
+	end
+	local deadline = os.clock() + timeout
+	while os.clock() < deadline do
+		if not droppingEnabled then return false end
+		local present = presentAltUserIds()
+		local allReady = true
+		for _, accountUserId in ipairs(present) do
+			local flag = ReplicatedStorage:FindFirstChild(readyKey(accountUserId))
+			local ready = false
+			if flag and flag:IsA("BoolValue") then
+				ready = (flag :: BoolValue).Value
+			end
+			if not ready then
+				allReady = false
+				break
+			end
+		end
+		if allReady then
+			Status.last = string.format("Synced (%d)", #present)
+			return true
+		end
+		task.wait(0.1)
+	end
+	Status.last = "Sync timeout"
+	warn(string.format("[%s] Sync timeout, resetting with whoever is ready.", player.Name))
+	return true
+end
 local function performDrop(): boolean
+	setSyncReady(false)
 	Status.phase = "Waiting for character"
 	if not waitWhilePaused() then return false end
 	local character = waitForCharacter() if not character then return false end
@@ -1219,6 +1291,8 @@ local function performDrop(): boolean
 	end
 	Status.phase = "Teleporting"
 	local teleported = teleportToClient(characterToKill) if not teleported then warn(string.format("[%s] Teleport failed.", player.Name)) return false end
+	setSyncReady(true)
+	Status.last = "Ready, syncing"
 	-- Paused after TP: hold at client, do NOT kill. On resume re-confirm
 	-- position (client may have moved) so the drop never lands elsewhere.
 	if not waitWhilePaused() then return false end
@@ -1232,6 +1306,9 @@ local function performDrop(): boolean
 			if not waitWhilePaused() then return false end
 		end
 	end
+	-- Wave sync: nobody resets until every alt in the server is teleported
+	-- and ready. A timeout falls back so one stuck alt cannot freeze the rest.
+	if not waitForAllReady() then setSyncReady(false) return false end
 	-- teleportToClient already waited for replication + verified position.
 	-- Safe adds its extra KillDelay on top. Blatant kills immediately.
 	if Settings.Mode ~= "Blatant" then
