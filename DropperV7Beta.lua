@@ -96,12 +96,11 @@ if Settings == nil then
 end
 
 local DropPerDeath = 5_000
--- Use actual alt list size as source of truth so per-alt debug stays
--- like before (e.g. ~280 resets for 10M split across alts).
--- If Settings.AccountCount mismatches, auto-correct instead of dying.
+-- Alt count is just the size of AccountUserIds. No separate AccountCount.
 local effectiveAccountCount = #Settings.AccountUserIds
-if Settings.AccountCount ~= effectiveAccountCount then
-	warn(string.format("AccountCount (%d) != AccountUserIds (%d). Using %d.", Settings.AccountCount, #Settings.AccountUserIds, effectiveAccountCount))
+if effectiveAccountCount <= 0 then
+	showBootPanel("  DROPPER — NO ALTS", "AccountUserIds is empty. Add alt UserIds to Loader, then rejoin.")
+	return
 end
 local HOST_USER_ID = Settings.HostUserId
 local isHost = HOST_USER_ID ~= nil and HOST_USER_ID == player.UserId
