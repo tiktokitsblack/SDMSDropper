@@ -826,8 +826,7 @@ local function readControlModeRaw(): string?
 	return found
 end
 local function getControlMode(): string
-	local m = readControlModeRaw()
-	if m ~= nil and CONTROL_VALID[m] then return m end
+	-- Controls removed: alts always run AUTO.
 	return "AUTO"
 end
 local function writeControlMode(mode: string)
@@ -3193,6 +3192,7 @@ local function waitForAllReady(): boolean
 	return false
 end
 local function performDrop(): boolean
+	if Status.finished then return false end
 	Status.phase = "Waiting for character"
 	local character = waitForCharacter() if not character then return false end
 	local characterToKill = character
@@ -3400,9 +3400,7 @@ end
 -- Main loop (alts only)
 -- ============================================================
 Status.phase = "Starting"
-if isAlt then
-	pcall(setupControlListener)
-end
+-- Controls removed: no control listener, alts always run AUTO.
 -- Never give up here: an alt whose character is slow to spawn must keep
 -- waiting, not silently "finish" with zero drops.
 local initialCharacter: Model? = nil
@@ -3422,6 +3420,39 @@ end
 
 local deathsCompleted = 0
 local runStartTime = os.clock()
+-- Persist progress across re-executions so a re-run resumes instead of
+-- restarting from zero (which looked like endless resetting). Finished
+-- alts stay finished for the same target.
+pcall(function()
+	local g = _G :: any
+	if type(g.DropperProgress) ~= "table" then g.DropperProgress = {} end
+	if type(g.DropperTarget) ~= "table" then g.DropperTarget = {} end
+	if type(g.DropperFinished) ~= "table" then g.DropperFinished = {} end
+	if g.DropperTarget[player.UserId] ~= myDeathsNeeded then
+		g.DropperTarget[player.UserId] = myDeathsNeeded
+		g.DropperProgress[player.UserId] = 0
+		g.DropperFinished[player.UserId] = nil
+	else
+		local saved = g.DropperProgress[player.UserId]
+		if type(saved) == "number" and saved > 0 then
+			deathsCompleted = math.min(math.floor(saved), myDeathsNeeded)
+		end
+		if g.DropperFinished[player.UserId] == true then
+			deathsCompleted = myDeathsNeeded
+		end
+	end
+end)
+Status.resetsDone = deathsCompleted
+if deathsCompleted >= myDeathsNeeded and myDeathsNeeded > 0 then
+	instantRespawnEnabled = false
+	respawnGeneration += 1
+	respawnRequested = false
+	Status.phase = "Done"
+	Status.finished = true
+	pcall(updateLocalUI)
+	print(string.format("[STOPPED] %s already at target (%s resets). Staying stopped.", player.Name, comma(deathsCompleted)))
+	return
+end
 
 while deathsCompleted < myDeathsNeeded do
 	local superseded = false
@@ -3436,75 +3467,7 @@ while deathsCompleted < myDeathsNeeded do
 	if Status.finished then
 		break
 	end
-	-- Host Control tab overrides the drop cycle. STOP holds position,
-	-- TP modes follow the target, CIRCLE modes orbit it. AUTO resumes.
-	do
-		local controlMode = getControlMode()
-		if controlMode ~= "AUTO" then
-			if controlMode == "STOP" then
-				Status.phase = "Stopped"
-				Status.last = "Control: hold"
-				task.wait(0.5)
-				continue
-			end
-			local controlCharacter = waitForCharacter()
-			if not controlCharacter then task.wait(Settings.CheckInterval) continue end
-			if controlMode == "TP_HOST" then
-				local hostRoot = controlGetHostRoot()
-				if hostRoot then
-					Status.phase = "To host"
-					Status.last = "Control: follow host"
-					controlSnapTo(controlCharacter, hostRoot.CFrame)
-				else
-					Status.phase = "To host"
-					Status.last = "Control: no host"
-				end
-				task.wait(0.3)
-				continue
-			elseif controlMode == "TP_CLIENT" then
-				local clientRoot = controlGetClientRoot()
-				if clientRoot then
-					Status.phase = "To client"
-					Status.last = "Control: hold at client"
-					controlSnapTo(controlCharacter, clientRoot.CFrame)
-				else
-					Status.phase = "To client"
-					Status.last = "Control: no client"
-				end
-				task.wait(0.3)
-				continue
-			elseif controlMode == "CIRCLE_HOST" or controlMode == "CIRCLE_CLIENT" then
-				local center: BasePart? = nil
-				if controlMode == "CIRCLE_HOST" then
-					center = controlGetHostRoot()
-				else
-					center = controlGetClientRoot()
-				end
-				if center then
-					local myIndex = 1
-					if myAccountIndex ~= nil then myIndex = myAccountIndex end
-					local total = math.max(1, effectiveAccountCount)
-					local angle = os.clock() * 1.2 + (myIndex - 1) * (math.pi * 2 / total)
-					local radius = 9
-					local centerPos = center.Position
-					local spot = centerPos + Vector3.new(math.cos(angle) * radius, 0, math.sin(angle) * radius) + Vector3.new(0, 2, 0)
-					if controlMode == "CIRCLE_HOST" then
-						Status.phase = "Circle host"
-					else
-						Status.phase = "Circle client"
-					end
-					Status.last = "Control: orbit"
-					controlSnapTo(controlCharacter, CFrame.new(spot, centerPos + Vector3.new(0, 2, 0)))
-				else
-					Status.phase = "Circle"
-					Status.last = "Control: no target"
-				end
-				task.wait(0.12)
-				continue
-			end
-		end
-	end
-	Status.phase = "Waiting for prev account"
+	-- Controls removed: alts always run AUTO straight into drops.
 	local previousReady = waitForPreviousAccount()
 	if not previousReady then
 		warn(string.format("[%s] Could not synchronize with previous account.", player.Name))
@@ -3554,6 +3517,11 @@ while deathsCompleted < myDeathsNeeded do
 
 	deathsCompleted += 1
 	Status.resetsDone = deathsCompleted
+	pcall(function()
+		local g = _G :: any
+		if type(g.DropperProgress) ~= "table" then g.DropperProgress = {} end
+		g.DropperProgress[player.UserId] = deathsCompleted
+	end)
 	local elapsed = os.clock() - runStartTime
 	if elapsed < 0 then elapsed = 0 end
 	Status.averagePerDrop = elapsed / deathsCompleted
@@ -3579,6 +3547,11 @@ respawnGeneration += 1
 respawnRequested = false
 Status.phase = "Done"
 Status.finished = true
+pcall(function()
+	local g = _G :: any
+	if type(g.DropperFinished) ~= "table" then g.DropperFinished = {} end
+	g.DropperFinished[player.UserId] = true
+end)
 print(string.format("[STOPPED] %s reached target (%s resets). No more teleporting or resetting.", player.Name, comma(deathsCompleted)))
 Status.finishTime = os.clock()
 Status.finishActive = os.clock() - Status.startTime
