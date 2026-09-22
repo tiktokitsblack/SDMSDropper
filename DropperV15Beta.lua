@@ -2893,6 +2893,7 @@ local function isAliveCharacter(char: Model?): boolean
 	return true
 end
 local function requestInstantRespawn(oldChar: Model?)
+	if Status.finished then return end
 	if not instantRespawnEnabled then return end
 	-- If a spam loop is already running, still fire one extra
 	-- immediate attempt so this death never waits for the loop tick.
@@ -3042,6 +3043,7 @@ local function getClientRoot(): BasePart?
 	return getRoot(clientCharacter)
 end
 local function teleportToClient(character: Model): boolean
+	if Status.finished then return false end
 	local client = getClient()
 	if not client then warn(string.format("[%s] Client is not in server.", player.Name)) return false end
 	local clientCharacter = client.Character
@@ -3114,6 +3116,7 @@ local function teleportToClient(character: Model): boolean
 	return false
 end
 local function selfKill(character: Model): boolean
+	if Status.finished then return false end
 	local humanoid = getHumanoid(character)
 	if not humanoid then warn(string.format("[%s] Humanoid not found.", player.Name)) return false end
 	if humanoid.Health <= 0 then return false end
@@ -3576,6 +3579,7 @@ respawnGeneration += 1
 respawnRequested = false
 Status.phase = "Done"
 Status.finished = true
+print(string.format("[STOPPED] %s reached target (%s resets). No more teleporting or resetting.", player.Name, comma(deathsCompleted)))
 Status.finishTime = os.clock()
 Status.finishActive = os.clock() - Status.startTime
 local activeRun = os.clock() - runStartTime
