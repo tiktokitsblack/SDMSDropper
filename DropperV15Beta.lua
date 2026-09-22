@@ -3274,8 +3274,8 @@ local function performDrop(): boolean
 	if Settings.Mode == "Blatant" then
 		requestInstantRespawn(characterToKill)
 	end
-	Status.phase = "Respawning"
-	local newCharacter = waitForNewCharacter(characterToKill) if not newCharacter then return false end
+	-- Count on the CONFIRMED kill. A slow respawn must only make the next
+	-- loop wait for a live character, never cause an extra uncounted kill.
 	return true
 end
 
@@ -3420,26 +3420,56 @@ end
 
 local deathsCompleted = 0
 local runStartTime = os.clock()
--- Persist progress across re-executions so a re-run resumes instead of
--- restarting from zero (which looked like endless resetting). Finished
--- alts stay finished for the same target.
+-- Progress survives re-executions (which used to restart the count from
+-- zero and look like endless resetting). Stored in _G AND mirrored to
+-- player attributes, so an executor _G wipe cannot lose it either. A real
+-- target change resets both stores for a fresh run.
 pcall(function()
 	local g = _G :: any
 	if type(g.DropperProgress) ~= "table" then g.DropperProgress = {} end
 	if type(g.DropperTarget) ~= "table" then g.DropperTarget = {} end
 	if type(g.DropperFinished) ~= "table" then g.DropperFinished = {} end
-	if g.DropperTarget[player.UserId] ~= myDeathsNeeded then
+	local attrTarget: number? = nil
+	local attrProgress: number? = nil
+	local attrFinished = false
+	pcall(function()
+		local t = player:GetAttribute("DropperTarget")
+		if type(t) == "number" then attrTarget = t end
+		local p = player:GetAttribute("DropperProgress")
+		if type(p) == "number" then attrProgress = p end
+		attrFinished = player:GetAttribute("DropperFinished") == true
+	end)
+	local targetChanged = false
+	if g.DropperTarget[player.UserId] ~= nil and g.DropperTarget[player.UserId] ~= myDeathsNeeded then
+		targetChanged = true
+	end
+	if attrTarget ~= nil and attrTarget ~= myDeathsNeeded then
+		targetChanged = true
+	end
+	if targetChanged then
 		g.DropperTarget[player.UserId] = myDeathsNeeded
 		g.DropperProgress[player.UserId] = 0
 		g.DropperFinished[player.UserId] = nil
+		pcall(function()
+			player:SetAttribute("DropperTarget", myDeathsNeeded)
+			player:SetAttribute("DropperProgress", 0)
+			player:SetAttribute("DropperFinished", false)
+		end)
 	else
+		local best = 0
 		local saved = g.DropperProgress[player.UserId]
-		if type(saved) == "number" and saved > 0 then
-			deathsCompleted = math.min(math.floor(saved), myDeathsNeeded)
-		end
-		if g.DropperFinished[player.UserId] == true then
+		if type(saved) == "number" and saved > best then best = math.floor(saved) end
+		if attrProgress ~= nil and attrProgress > best then best = math.floor(attrProgress) end
+		deathsCompleted = math.min(best, myDeathsNeeded)
+		if g.DropperFinished[player.UserId] == true or attrFinished then
 			deathsCompleted = myDeathsNeeded
 		end
+		g.DropperTarget[player.UserId] = myDeathsNeeded
+		g.DropperProgress[player.UserId] = deathsCompleted
+		pcall(function()
+			player:SetAttribute("DropperTarget", myDeathsNeeded)
+			player:SetAttribute("DropperProgress", deathsCompleted)
+		end)
 	end
 end)
 Status.resetsDone = deathsCompleted
@@ -3454,6 +3484,20 @@ if deathsCompleted >= myDeathsNeeded and myDeathsNeeded > 0 then
 	return
 end
 
+-- Client cash baseline for the global cash-goal stop. No blocking waits:
+-- if unreadable now, the loop top keeps trying until it sticks.
+local clientCashBaseline: number? = nil
+pcall(function()
+	local cp = getClient()
+	if cp then
+		local c = readPlayerCash(cp)
+		if c ~= nil then clientCashBaseline = c end
+	end
+end)
+if clientCashBaseline ~= nil then
+	print(string.format("[%s] Client cash baseline: %s (stopping at +%s).", player.Name, comma(clientCashBaseline), comma(Settings.TargetDrop)))
+end
+
 while deathsCompleted < myDeathsNeeded do
 	local superseded = false
 	pcall(function()
@@ -3466,6 +3510,55 @@ while deathsCompleted < myDeathsNeeded do
 	end
 	if Status.finished then
 		break
+	end
+	-- Cross-copy progress sync + global cash-goal stop, checked every drop.
+	-- A duplicate execution adopts the highest known count instead of each
+	-- copy doing a full target, and every alt stops once the client really
+	-- gained the target cash, even if the reset count says otherwise.
+	pcall(function()
+		local g = _G :: any
+		if type(g.DropperProgress) == "table" then
+			local saved = g.DropperProgress[player.UserId]
+			if type(saved) == "number" and saved > deathsCompleted then
+				deathsCompleted = math.min(math.floor(saved), myDeathsNeeded)
+				Status.resetsDone = deathsCompleted
+			end
+		end
+	end)
+	pcall(function()
+		local ap = player:GetAttribute("DropperProgress")
+		if type(ap) == "number" and ap > deathsCompleted then
+			deathsCompleted = math.min(math.floor(ap), myDeathsNeeded)
+			Status.resetsDone = deathsCompleted
+		end
+	end)
+	if deathsCompleted >= myDeathsNeeded then
+		break
+	end
+	if clientCashBaseline == nil then
+		pcall(function()
+			local cp = getClient()
+			if cp then
+				local c = readPlayerCash(cp)
+				if c ~= nil then clientCashBaseline = c end
+			end
+		end)
+	else
+		local baseline: number = clientCashBaseline
+		local gainReached = false
+		pcall(function()
+			local cp = getClient()
+			if cp then
+				local now = readPlayerCash(cp)
+				if now ~= nil and (now - baseline) >= Settings.TargetDrop then
+					gainReached = true
+				end
+			end
+		end)
+		if gainReached then
+			print(string.format("[%s] CASH TARGET REACHED on client (+%s). Stopping.", player.Name, comma(Settings.TargetDrop)))
+			break
+		end
 	end
 	-- Controls removed: alts always run AUTO straight into drops.
 	local previousReady = waitForPreviousAccount()
@@ -3522,6 +3615,9 @@ while deathsCompleted < myDeathsNeeded do
 		if type(g.DropperProgress) ~= "table" then g.DropperProgress = {} end
 		g.DropperProgress[player.UserId] = deathsCompleted
 	end)
+	pcall(function()
+		player:SetAttribute("DropperProgress", deathsCompleted)
+	end)
 	local elapsed = os.clock() - runStartTime
 	if elapsed < 0 then elapsed = 0 end
 	Status.averagePerDrop = elapsed / deathsCompleted
@@ -3551,6 +3647,9 @@ pcall(function()
 	local g = _G :: any
 	if type(g.DropperFinished) ~= "table" then g.DropperFinished = {} end
 	g.DropperFinished[player.UserId] = true
+end)
+pcall(function()
+	player:SetAttribute("DropperFinished", true)
 end)
 print(string.format("[STOPPED] %s reached target (%s resets). No more teleporting or resetting.", player.Name, comma(deathsCompleted)))
 Status.finishTime = os.clock()
