@@ -3569,6 +3569,11 @@ while deathsCompleted < myDeathsNeeded do
 	end
 end
 
+-- The drop loop is complete for this alt. Disable its respawn hooks too,
+-- otherwise a later death can start another character cycle after the target.
+instantRespawnEnabled = false
+respawnGeneration += 1
+respawnRequested = false
 Status.phase = "Done"
 Status.finished = true
 Status.finishTime = os.clock()
